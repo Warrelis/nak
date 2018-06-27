@@ -57,7 +57,9 @@ fn main() {
                 }
             }
             let res = remote.run(Command::Path(c.unwrap()), Args { args });
-            println!("{:?}", res);
+            match res {
+                Response::Text(text) => println!("{}", text),
+            }
         }
         Err(error) => println!("error: {}", error),
     }
