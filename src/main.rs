@@ -1,11 +1,16 @@
 #[macro_use]
 extern crate failure;
 
+extern crate futures;
+
 use std::io::Write;
 use std::io;
 use std::process as pr;
 
 use failure::Error;
+use futures::{Future, Stream, Async};
+use futures::task::Context;
+use futures::executor::ThreadPool;
 
 pub enum Tool {
     Path(String),
@@ -20,9 +25,9 @@ pub struct Command {
     args: Args,
 }
 
-#[derive(Debug)]
 pub enum Response {
     Text(String),
+    Stream(Box<Stream<Item=String, Error=Error>>)
 }
 
 pub trait Remote {
@@ -80,6 +85,27 @@ impl Reader for SimpleReader {
     }
 }
 
+struct WritingFuture(Box<dyn Stream<Item=String, Error=Error>>);
+
+impl Future for WritingFuture {
+    type Item = ();
+    type Error = Error;
+
+    fn poll(&mut self, cx: &mut Context) -> Result<Async<Self::Item>, Self::Error> {
+        match self.0.poll_next(cx) {
+            Ok(Async::Pending) => panic!(),
+            Ok(Async::Ready(Some(_val))) => panic!(),
+            Ok(Async::Ready(None)) => panic!(),
+            Err(_err) => panic!(),
+        }
+    }
+}
+
+fn run_to_completion(s: Box<dyn Stream<Item=String, Error=Error>>) -> impl Future<Item=(), Error=Error> {
+
+    WritingFuture(s)
+}
+
 fn main() {
     let mut reader = SimpleReader;
     let remote = SimpleRemote;
@@ -87,8 +113,15 @@ fn main() {
     loop {
         let e = reader.get_command(&remote)
             .and_then(|cmd| remote.run(cmd))
-            .map(|res| match res {
-                Response::Text(text) => println!("{}", text),
+            .and_then(|res| match res {
+                Response::Text(text) => {
+                    println!("{}", text);
+                    Ok(())
+                }
+                Response::Stream(stream) => {
+                    ThreadPool::new()?
+                        .run(run_to_completion(stream))
+                }
             }).err();
 
         if let Some(e) = e {
