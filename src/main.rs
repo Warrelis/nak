@@ -1,8 +1,10 @@
 #[macro_use]
 extern crate failure;
-
+extern crate os_pipe;
 extern crate futures;
 
+use os_pipe::IntoStdio;
+use std::io::Read;
 use std::io::Write;
 use std::io;
 use std::process as pr;
@@ -25,9 +27,34 @@ pub struct Command {
     args: Args,
 }
 
+pub enum Output {
+
+}
+
 pub enum Response {
     Text(String),
-    Stream(Box<Stream<Item=String, Error=Error>>)
+    Stream {
+        stdout: Box<Stream<Item=String, Error=Error>>,
+    }
+}
+
+struct SingleStream {
+    out: Option<String>
+}
+
+impl Stream for SingleStream {
+    type Item = String;
+    type Error = Error;
+
+    fn poll_next(
+        &mut self, 
+        _cx: &mut Context
+    ) -> Result<Async<Option<Self::Item>>, Self::Error> {
+        match self.out.take() {
+            Some(out) => Ok(Async::Ready(Some(out))),
+            None => Ok(Async::Ready(None))
+        }
+    }
 }
 
 pub trait Remote {
@@ -40,11 +67,30 @@ impl Remote for SimpleRemote {
     fn run(&self, c: Command) -> Result<Response, Error> {
         match c.tool {
             Tool::Path(path) => {
-                let out = pr::Command::new(path)
-                    .args(&c.args.args)
-                    .output()?;
+                let mut child = pr::Command::new(path);
+                child.args(&c.args.args);
 
-                Ok(Response::Text(String::from_utf8(out.stdout)?))
+                let (mut reader, writer) = os_pipe::pipe()?;
+
+                child.stdout(writer.into_stdio());
+
+                // Now start the child running.
+                let mut handle = child.spawn()?;
+
+                // Very important when using pipes: This parent process is still
+                // holding its copies of the write ends, and we have to close them
+                // before we read, otherwise the read end will never report EOF. The
+                // Command object owns the writers now, and dropping it closes them.
+                drop(child);
+
+                let mut output = String::new();
+                // Finally we can read all the output and clean up the child.
+                reader.read_to_string(&mut output)?;
+                handle.wait()?;
+
+                Ok(Response::Stream {
+                    stdout: Box::new(SingleStream { out: Some(output) })
+                })
             }
         }
     }
@@ -92,17 +138,18 @@ impl Future for WritingFuture {
     type Error = Error;
 
     fn poll(&mut self, cx: &mut Context) -> Result<Async<Self::Item>, Self::Error> {
-        match self.0.poll_next(cx) {
-            Ok(Async::Pending) => panic!(),
-            Ok(Async::Ready(Some(_val))) => panic!(),
-            Ok(Async::Ready(None)) => panic!(),
-            Err(_err) => panic!(),
+        loop {
+            match self.0.poll_next(cx) {
+                Ok(Async::Ready(Some(val))) => print!("{}", val),
+                Ok(Async::Pending) => return Ok(Async::Pending),
+                Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
+                Err(err) => return Err(err),
+            }
         }
     }
 }
 
 fn run_to_completion(s: Box<dyn Stream<Item=String, Error=Error>>) -> impl Future<Item=(), Error=Error> {
-
     WritingFuture(s)
 }
 
@@ -118,9 +165,9 @@ fn main() {
                     println!("{}", text);
                     Ok(())
                 }
-                Response::Stream(stream) => {
+                Response::Stream { stdout } => {
                     ThreadPool::new()?
-                        .run(run_to_completion(stream))
+                        .run(run_to_completion(stdout))
                 }
             }).err();
 
