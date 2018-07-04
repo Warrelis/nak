@@ -15,6 +15,8 @@ use futures::{Future, Stream, Async};
 use futures::task::Context;
 use futures::executor::ThreadPool;
 
+mod parse;
+
 pub enum Tool {
     Path(String),
 }
