@@ -2,6 +2,7 @@
 extern crate failure;
 extern crate os_pipe;
 extern crate futures;
+extern crate tokio;
 
 use os_pipe::IntoStdio;
 use std::io::Read;
@@ -25,10 +26,6 @@ pub struct Args {
 pub struct Command {
     tool: Tool,
     args: Args,
-}
-
-pub enum Output {
-
 }
 
 pub enum Response {
