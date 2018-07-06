@@ -45,8 +45,32 @@ impl<'t, 'n> View<'t, 'n> {
     }
 }
 
+pub struct Command<'t, 'n>(View<'t, 'n>);
+
+impl<'t, 'n> Command<'t, 'n> {
+    pub fn head(&self) -> &'t str {
+        for c in &self.0.node.children {
+            match c.ty {
+                NodeType::Whitespace |
+                NodeType::Comment => continue,
+                NodeType::Word => return &self.0.text[c.begin..c.end],
+                _ => panic!(),
+            }
+        }
+        panic!();
+    }
+
+    pub fn body(&self) -> Vec<&'t str> {
+        self.0.node.children.iter()
+            .filter(|c| c.ty != NodeType::Whitespace && c.ty != NodeType::Comment)
+            .skip(1)
+            .map(|c| &self.0.text[c.begin..c.end])
+            .collect()
+    }
+}
+
 #[derive(Default)]
-struct Parser {
+pub struct Parser {
     nodes: Vec<Node>,
 }
 
@@ -61,7 +85,8 @@ impl Parser {
     pub fn new() -> Parser {
         Parser::default()
     }
-    pub fn parse<'t, 'n>(&'n mut self, input: &'t str) -> View<'t, 'n> {
+
+    pub fn parse<'t, 'n>(&'n mut self, input: &'t str) -> Command<'t, 'n> {
 
         let bytes = input.as_bytes();
 
@@ -71,7 +96,7 @@ impl Parser {
 
         while pos < bytes.len() {
             match bytes[pos] {
-                b' ' => {
+                b' ' | b'\n' => {
                     let begin = pos;
                     pos += 1;
                     while pos < bytes.len() && bytes[pos] == b' ' {
@@ -115,7 +140,7 @@ impl Parser {
 
         v.assert_full();
 
-        v
+        Command(v)
     }
 }
 
@@ -140,25 +165,25 @@ fn can_parse() {
 
     {
         let v = parser.parse("test");
-        assert_eq!(v.node.ty, NodeType::Command);
+        assert_eq!(v.0.node.ty, NodeType::Command);
         assert_eq!(
-            v.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
+            v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
             vec![NodeType::Word]);
     }
 
     {
         let v = parser.parse(" test ");
-        assert_eq!(v.node.ty, NodeType::Command);
+        assert_eq!(v.0.node.ty, NodeType::Command);
         assert_eq!(
-            v.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
+            v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
             vec![NodeType::Whitespace, NodeType::Word, NodeType::Whitespace]);
     }
 
     {
         let v = parser.parse(" test test2");
-        assert_eq!(v.node.ty, NodeType::Command);
+        assert_eq!(v.0.node.ty, NodeType::Command);
         assert_eq!(
-            v.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
+            v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
             vec![
                 NodeType::Whitespace,
                 NodeType::Word,

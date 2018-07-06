@@ -1,4 +1,4 @@
-#[macro_use]
+// #[macro_use]
 extern crate failure;
 extern crate os_pipe;
 extern crate futures;
@@ -17,14 +17,19 @@ use futures::executor::ThreadPool;
 
 mod parse;
 
+use parse::Parser;
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Tool {
     Path(String),
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct Args {
     args: Vec<String>
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct Command {
     tool: Tool,
     args: Args,
@@ -100,19 +105,13 @@ trait Reader {
 }
 
 fn parse_command_simple(input: &str) -> Result<Command, Error> {
-    let parts = input.trim().split(" ");
-    let mut c = None;
-    let mut args = Vec::new();
-    for p in parts {
-        if c.is_none() {
-            c = Some(p.to_string());
-        } else {
-            args.push(p.to_string());
-        }
-    }
+    let mut p = Parser::new();
+
+    let cmd = p.parse(input);
+
     Ok(Command {
-        tool: Tool::Path(c.ok_or_else(|| format_err!("No binary"))?),
-        args: Args { args },
+        tool: Tool::Path(cmd.head().to_string()),
+        args: Args { args: cmd.body().into_iter().map(String::from).collect() },
     })
 }
 
@@ -146,6 +145,19 @@ impl Future for WritingFuture {
             }
         }
     }
+}
+
+#[test]
+fn parse_simple() {
+    let c = parse_command_simple(" test 1 abc 2").unwrap();
+    assert_eq!(c, Command {
+        tool: Tool::Path(String::from("test")),
+        args: Args {args: vec![
+            String::from("1"),
+            String::from("abc"),
+            String::from("2"),
+        ]}
+    });
 }
 
 fn run_to_completion(s: Box<dyn Stream<Item=String, Error=Error>>) -> impl Future<Item=(), Error=Error> {
