@@ -3,11 +3,16 @@ extern crate failure;
 extern crate os_pipe;
 extern crate futures;
 extern crate tokio;
+extern crate rand;
+extern crate base64;
 
+use rand::thread_rng;
+use rand::Rng;
 use os_pipe::IntoStdio;
 use std::io::Read;
 use std::io::Write;
 use std::io;
+use std::str;
 use std::process as pr;
 
 use failure::Error;
@@ -62,33 +67,28 @@ impl Stream for SingleStream {
 }
 
 pub trait Remote {
-    fn run(&self, c: Command) -> Result<Response, Error>;
+    fn run(&mut self, c: Command) -> Result<Response, Error>;
 }
 
 pub struct SimpleRemote;
 
 impl Remote for SimpleRemote {
-    fn run(&self, c: Command) -> Result<Response, Error> {
+    fn run(&mut self, c: Command) -> Result<Response, Error> {
         match c.tool {
             Tool::Path(path) => {
-                let mut child = pr::Command::new(path);
-                child.args(&c.args.args);
+                let mut cmd = pr::Command::new(path);
+                cmd.args(&c.args.args);
 
                 let (mut reader, writer) = os_pipe::pipe()?;
 
-                child.stdout(writer.into_stdio());
+                cmd.stdout(writer.into_stdio());
 
-                // Now start the child running.
-                let mut handle = child.spawn()?;
+                let mut handle = cmd.spawn()?;
 
-                // Very important when using pipes: This parent process is still
-                // holding its copies of the write ends, and we have to close them
-                // before we read, otherwise the read end will never report EOF. The
-                // Command object owns the writers now, and dropping it closes them.
-                drop(child);
+                drop(cmd);
 
                 let mut output = String::new();
-                // Finally we can read all the output and clean up the child.
+
                 reader.read_to_string(&mut output)?;
                 handle.wait()?;
 
@@ -97,6 +97,87 @@ impl Remote for SimpleRemote {
                 })
             }
         }
+    }
+}
+
+struct ShRemote {
+    input: os_pipe::PipeWriter,
+    output: os_pipe::PipeReader,
+    error: os_pipe::PipeReader,
+    child: pr::Child,
+}
+
+impl ShRemote {
+    fn new() -> Result<ShRemote, Error> {
+        let mut cmd = pr::Command::new("sh");
+
+        let (output_reader, output_writer) = os_pipe::pipe()?;
+        let (error_reader, error_writer) = os_pipe::pipe()?;
+        let (input_reader, input_writer) = os_pipe::pipe()?;
+
+        cmd.stdout(output_writer.into_stdio());
+        cmd.stderr(error_writer.into_stdio());
+        cmd.stdin(input_reader.into_stdio());
+
+        let child = cmd.spawn()?;
+
+        drop(cmd);
+
+        Ok(ShRemote {
+            input: input_writer,
+            output: output_reader,
+            error: error_reader,
+            child
+        })
+    }
+}
+
+impl Remote for ShRemote {
+    fn run(&mut self, c: Command) -> Result<Response, Error> {
+        let args = c.args.args.join(" "); // TODO: proper escaping!
+        let tool = match c.tool {
+            Tool::Path(path) => path,
+        };
+        let mut bytes = [0u8; 16];
+        thread_rng().fill(&mut bytes);
+        let key = base64::encode(&bytes);
+        let key_bytes = key.as_bytes();
+        let line = format!("{} {}; echo {}${{?}}e\n", tool, args, key);
+        // println!("writing {:?}", line);
+        self.input.write(line.as_bytes())?;
+        self.input.flush()?;
+
+        // TODO: non-blocking...
+
+        let mut output = Vec::new();
+
+        let mut buf = [0u8; 1024];
+        let mut match_pos = 0;
+
+        let mut loops = 10;
+        'outer: loop {
+            if loops <= 1 {
+                break;
+            }
+            loops -= 1;
+            let len = self.output.read(&mut buf)?;
+            if len+match_pos >= key_bytes.len() {
+                for i in 0 .. len+match_pos-key_bytes.len() {
+                    // println!("cmp {:?}, {:?}", str::from_utf8(&buf[i .. i+key_bytes.len()-match_pos])?, str::from_utf8(&key_bytes[match_pos..])?);
+                    if &buf[i .. i+key_bytes.len()-match_pos] == &key_bytes[match_pos..] {
+                        output.extend(&buf[..i]);
+
+                        // TODO: read the exit code from:
+                        let _res = &buf[len-key_bytes.len()+match_pos .. len];
+                        break 'outer;
+                    }
+                    match_pos = 0;
+                }
+            }
+            output.extend(&buf[..len]);
+        }
+
+        Ok(Response::Text(String::from_utf8(output)?))
     }
 }
 
@@ -135,7 +216,9 @@ impl Future for WritingFuture {
     type Item = ();
     type Error = Error;
 
-    fn poll(&mut self, cx: &mut Context) -> Result<Async<Self::Item>, Self::Error> {
+    fn poll(&mut self, cx: &mut Context)
+        -> Result<Async<Self::Item>, Self::Error>
+    {
         loop {
             match self.0.poll_next(cx) {
                 Ok(Async::Ready(Some(val))) => print!("{}", val),
@@ -160,13 +243,16 @@ fn parse_simple() {
     });
 }
 
-fn run_to_completion(s: Box<dyn Stream<Item=String, Error=Error>>) -> impl Future<Item=(), Error=Error> {
+fn run_to_completion(s: Box<dyn Stream<Item=String, Error=Error>>)
+    -> impl Future<Item=(), Error=Error>
+{
     WritingFuture(s)
 }
 
 fn main() {
     let mut reader = SimpleReader;
-    let remote = SimpleRemote;
+    // let mut remote = SimpleRemote;
+    let mut remote = ShRemote::new().unwrap();
 
     loop {
         let e = reader.get_command(&remote)
