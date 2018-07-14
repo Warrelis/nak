@@ -1,16 +1,16 @@
-// #[macro_use]
+#[macro_use]
 extern crate failure;
 extern crate os_pipe;
 extern crate futures;
 extern crate tokio;
 extern crate base64;
+extern crate liner;
 
 use std::borrow::Borrow;
 use os_pipe::IntoStdio;
 use std::io::Read;
-use std::io::Write;
-use std::io;
 use std::str;
+use std::io;
 use std::process as pr;
 
 use failure::Error;
@@ -104,32 +104,58 @@ impl Remote for SimpleRemote {
     }
 }
 
-trait Reader {
-    fn get_command(&mut self, remote: &dyn Remote) -> Result<Command, Error>;
+#[derive(Clone, Debug, PartialEq)]
+enum Shell {
+    DoNothing,
+    Run(Command),
+    Exit,
 }
 
-fn parse_command_simple(input: &str) -> Result<Command, Error> {
+trait Reader {
+    fn get_command(&mut self, remote: &dyn Remote) -> Result<Shell, Error>;
+}
+
+fn parse_command_simple(input: &str) -> Result<Shell, Error> {
     let mut p = Parser::new();
+
+    if input.len() == 0 {
+        return Ok(Shell::DoNothing);
+    }
 
     let cmd = p.parse(input);
 
-    Ok(Command {
+    Ok(Shell::Run(Command {
         tool: Tool::Path(cmd.head().to_string()),
         args: Args { args: cmd.body().into_iter().map(String::from).collect() },
-    })
+    }))
 }
 
-struct SimpleReader;
+struct SimpleReader {
+    ctx: liner::Context,
+}
+
+impl SimpleReader {
+    fn new() -> SimpleReader {
+        SimpleReader {
+            ctx: liner::Context::new(),
+        }
+    }
+}
 
 impl Reader for SimpleReader {
-    fn get_command(&mut self, _: &dyn Remote) -> Result<Command, Error> {
-        let mut input = String::new();
+    fn get_command(&mut self, _: &dyn Remote) -> Result<Shell, Error> {
+        let res = match self.ctx.read_line("[prompt]$ ", &mut |_| {}) {
+            Ok(res) => res,
+            Err(e) => {
+                return match e.kind() {
+                    io::ErrorKind::Interrupted => Ok(Shell::DoNothing),
+                    io::ErrorKind::UnexpectedEof => Ok(Shell::Exit),
+                    _ => Err(e.into()),
+                }
+            }
+        };
 
-        print!("> ");
-        io::stdout().flush().unwrap();
-        Ok(io::stdin().read_line(&mut input)
-            .map_err(Error::from)
-            .and_then(|_| parse_command_simple(&input))?)
+        Ok(parse_command_simple(&res)?)
     }
 }
 
@@ -156,14 +182,14 @@ impl Future for WritingFuture {
 #[test]
 fn parse_simple() {
     let c = parse_command_simple(" test 1 abc 2").unwrap();
-    assert_eq!(c, Command {
+    assert_eq!(c, Shell::Run(Command {
         tool: Tool::Path(String::from("test")),
         args: Args {args: vec![
             String::from("1"),
             String::from("abc"),
             String::from("2"),
         ]}
-    });
+    }));
 }
 
 fn run_to_completion(s: Box<dyn Stream<Item=String, Error=Error>>)
@@ -172,34 +198,41 @@ fn run_to_completion(s: Box<dyn Stream<Item=String, Error=Error>>)
     WritingFuture(s)
 }
 
-fn remote_run(mut remote: Box<dyn Remote>, reader: &mut dyn Reader)
-    -> Result<(), Error>
+fn one_loop(remote: &mut dyn Remote, reader: &mut dyn Reader)
+    -> Result<bool, Error>
 {
-    loop {
-        let e = reader.get_command(remote.borrow())
-            .and_then(|cmd| remote.run(cmd))
-            .and_then(|res| match res {
+    match reader.get_command(remote.borrow())? {
+        Shell::Exit => return Ok(false),
+        Shell::DoNothing => {}
+        Shell::Run(cmd) => {
+            let res = remote.run(cmd)?;
+        
+            match res {
                 Response::Text(text) => {
                     println!("{}", text);
-                    Ok(())
                 }
                 Response::Stream { stdout } => {
                     ThreadPool::new()?
-                        .run(run_to_completion(stdout))
+                        .run(run_to_completion(stdout))?;
                 }
                 Response::Remote(remote) => {
-                    remote_run(remote, reader)
+                    remote_run(remote, reader)?;
                 }
-            }).err();
-
-        if let Some(e) = e {
-            println!("{:?}", e);
+            }
         }
     }
+    Ok(true)
+}
+
+fn remote_run(mut remote: Box<dyn Remote>, reader: &mut dyn Reader)
+    -> Result<(), Error>
+{
+    while one_loop(remote.as_mut(), reader)? {}
+    Ok(())
 }
 
 fn main() {
-    let mut reader = SimpleReader;
+    let mut reader = SimpleReader::new();
     let remote = Box::new(SimpleRemote);
 
     remote_run(remote, &mut reader).unwrap();
