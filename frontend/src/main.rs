@@ -9,9 +9,8 @@ extern crate liner;
 extern crate serde;
 extern crate serde_json;
 
-use os_pipe::{PipeReader, PipeWriter, IntoStdio};
-use std::io::{Read, Write, BufRead, BufReader};
-use std::borrow::Borrow;
+use os_pipe::{PipeWriter, IntoStdio};
+use std::io::{Write, BufRead, BufReader};
 use std::str;
 use std::io;
 use std::process as pr;
@@ -19,8 +18,6 @@ use std::thread;
 use std::sync::mpsc;
 
 use failure::Error;
-use futures::{Future, Stream, Async};
-use futures::task::Context;
 
 mod parse;
 
@@ -46,24 +43,21 @@ pub struct Command {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Rpc {
+pub enum RpcRequest {
     BeginCommand {
         id: usize,
         command: Command,
     },
-    CommandResult {
-        id: usize,
-        output: String,
-    }
 }
 
-// pub enum Response {
-//     Text(String),
-//     Stream {
-//         stdout: Box<Stream<Item=String, Error=Error>>,
-//     },
-//     Remote(Box<dyn Remote>),
-// }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum RpcResponse {
+    CommandDone {
+        id: usize,
+        output: String,
+        exit_code: i64,
+    }
+}
 
 pub struct Response {
     id: usize
@@ -72,7 +66,7 @@ pub struct Response {
 pub struct BackendRemote {
     next_id: usize,
     input: PipeWriter,
-    output: mpsc::Receiver<(usize, String)>,
+    output: mpsc::Receiver<RpcResponse>,
 }
 
 fn launch_backend() -> Result<BackendRemote, Error> {
@@ -96,14 +90,9 @@ fn launch_backend() -> Result<BackendRemote, Error> {
             let mut input = String::new();
             match output.read_line(&mut input) {
                 Ok(_) => {
-                    let rpc: Rpc = serde_json::from_str(&input).unwrap();
+                    let rpc: RpcResponse = serde_json::from_str(&input).unwrap();
 
-                    match rpc {
-                        Rpc::BeginCommand { .. } => panic!(),
-                        Rpc::CommandResult { id, output } => {
-                            sender.send((id, output)).unwrap();
-                        }
-                    }
+                    sender.send(rpc).unwrap();
                 }
                 Err(error) => eprintln!("error: {}", error),
             }
@@ -121,7 +110,7 @@ impl BackendRemote {
     fn run(&mut self, c: Command) -> Result<Response, Error> {
         let id = self.next_id;
         self.next_id += 1;
-        let serialized = serde_json::to_string(&Rpc::BeginCommand {
+        let serialized = serde_json::to_string(&RpcRequest::BeginCommand {
             id,
             command: c
         })?;
@@ -189,26 +178,6 @@ impl Reader for SimpleReader {
     }
 }
 
-struct WritingFuture(Box<dyn Stream<Item=String, Error=Error>>);
-
-impl Future for WritingFuture {
-    type Item = ();
-    type Error = Error;
-
-    fn poll(&mut self, cx: &mut Context)
-        -> Result<Async<Self::Item>, Self::Error>
-    {
-        loop {
-            match self.0.poll_next(cx) {
-                Ok(Async::Ready(Some(val))) => print!("{}", val),
-                Ok(Async::Pending) => return Ok(Async::Pending),
-                Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
-                Err(err) => return Err(err),
-            }
-        }
-    }
-}
-
 #[test]
 fn parse_simple() {
     let c = parse_command_simple(" test 1 abc 2").unwrap();
@@ -232,12 +201,16 @@ fn one_loop(remote: &mut BackendRemote, reader: &mut dyn Reader)
             let res = remote.run(cmd)?;
 
             loop {
-                let (id, output) = remote.output.recv()?;
+                let msg = remote.output.recv()?;
 
-                assert_eq!(id, res.id);
-
-                print!("{}", output);
-                break;
+                match msg {
+                    RpcResponse::CommandDone { id, output, exit_code } => {
+                        assert_eq!(id, res.id);
+                        print!("{}", output);
+                        println!("exit_code: {}", exit_code);
+                        break;
+                    }
+                }
             }
         }
     }

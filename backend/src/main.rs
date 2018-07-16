@@ -33,21 +33,26 @@ pub struct Command {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Rpc {
+pub enum RpcRequest {
     BeginCommand {
         id: usize,
         command: Command,
     },
-    CommandResult {
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum RpcResponse {
+    CommandDone {
         id: usize,
         output: String,
+        exit_code: i64,
     }
 }
 
 pub struct Backend;
 
 impl Backend {
-    fn run(&mut self, c: Command) -> Result<String, Error> {
+    fn run(&mut self, c: Command) -> Result<(String, i64), Error> {
         match c.tool {
             Tool::Path(path) => {
                 let mut cmd = pr::Command::new(path);
@@ -64,9 +69,9 @@ impl Backend {
                 let mut output = String::new();
 
                 reader.read_to_string(&mut output)?;
-                handle.wait()?;
+                let exit_code = handle.wait()?.code().unwrap_or(-1);
 
-                Ok(output)
+                Ok((output, exit_code.into()))
             }
             Tool::Remote { .. } => panic!(),
         }
@@ -84,19 +89,19 @@ fn main() {
                     break;
                 }
 
-                let rpc: Rpc = serde_json::from_str(&input).unwrap();
+                let rpc: RpcRequest = serde_json::from_str(&input).unwrap();
 
                 match rpc {
-                    Rpc::BeginCommand { id, command } => {
-                        let output = backend.run(command).unwrap();
-                        let serialized = serde_json::to_string(&Rpc::CommandResult {
+                    RpcRequest::BeginCommand { id, command } => {
+                        let (output, exit_code) = backend.run(command).unwrap();
+                        let serialized = serde_json::to_string(&RpcResponse::CommandDone {
                             id,
                             output,
+                            exit_code,
                         }).unwrap();
 
                         write!(io::stdout(), "{}\n", serialized).unwrap();
                     }
-                    Rpc::CommandResult { .. } => panic!(),
                 }
             }
             Err(error) => {
