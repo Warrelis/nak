@@ -1,3 +1,4 @@
+#[macro_use]
 extern crate failure;
 #[macro_use]
 extern crate serde_derive;
@@ -24,8 +25,9 @@ mod parse;
 use parse::Parser;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Tool {
-    Path(String),
+pub enum Command {
+    Unknown(String, Args),
+    SetDirectory(String),
     Remote {
         host: String,
     },
@@ -34,12 +36,6 @@ pub enum Tool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Args {
     args: Vec<String>
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Command {
-    tool: Tool,
-    args: Args,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -114,7 +110,6 @@ fn launch_backend() -> Result<BackendRemote, Error> {
 }
 
 impl BackendRemote {
-
     fn next_id(&mut self) -> usize {
         let res = self.next_id;
         self.next_id += 1;
@@ -153,6 +148,14 @@ trait Reader {
     fn get_command(&mut self) -> Result<Shell, Error>;
 }
 
+fn check_single_arg(items: &[&str]) -> Result<String, Error> {
+    if items.len() == 1 {
+        Ok(items[0].to_string())
+    } else {
+        Err(format_err!("Bad argument length: {}", items.len()))
+    }
+}
+
 fn parse_command_simple(input: &str) -> Result<Shell, Error> {
     let mut p = Parser::new();
 
@@ -162,9 +165,14 @@ fn parse_command_simple(input: &str) -> Result<Shell, Error> {
 
     let cmd = p.parse(input);
 
-    Ok(Shell::Run(Command {
-        tool: Tool::Path(cmd.head().to_string()),
-        args: Args { args: cmd.body().into_iter().map(String::from).collect() },
+    let head = cmd.head();
+
+    Ok(Shell::Run(match head {
+        "cd" => Command::SetDirectory(check_single_arg(&cmd.body())?),
+        _ => Command::Unknown(
+            head.to_string(),
+            Args { args: cmd.body().into_iter().map(String::from).collect() },
+        )
     }))
 }
 
@@ -200,14 +208,14 @@ impl Reader for SimpleReader {
 #[test]
 fn parse_simple() {
     let c = parse_command_simple(" test 1 abc 2").unwrap();
-    assert_eq!(c, Shell::Run(Command {
-        tool: Tool::Path(String::from("test")),
-        args: Args {args: vec![
+    assert_eq!(c, Shell::Run(Command::Unknown(
+        String::from("test"),
+        Args {args: vec![
             String::from("1"),
             String::from("abc"),
             String::from("2"),
         ]}
-    }));
+    )));
 }
 
 fn one_loop(remote: &mut BackendRemote, reader: &mut dyn Reader)

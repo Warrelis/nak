@@ -8,14 +8,16 @@ extern crate os_pipe;
 use std::io::Write;
 use std::io::Read;
 use std::io;
+use std::env;
 
 use failure::Error;
 use std::process as pr;
 use os_pipe::IntoStdio;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Tool {
-    Path(String),
+pub enum Command {
+    Unknown(String, Args),
+    SetDirectory(String),
     Remote {
         host: String,
     },
@@ -24,12 +26,6 @@ pub enum Tool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Args {
     args: Vec<String>
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Command {
-    tool: Tool,
-    args: Args,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -74,10 +70,10 @@ pub struct Backend;
 
 impl Backend {
     fn run(&mut self, id: usize, stdout_pipe: usize, stderr_pipe: usize, c: Command) -> Result<(), Error> {
-        match c.tool {
-            Tool::Path(path) => {
+        match c {
+            Command::Unknown(path, args) => {
                 let mut cmd = pr::Command::new(path);
-                cmd.args(&c.args.args);
+                cmd.args(&args.args);
 
                 let (mut output_reader, output_writer) = os_pipe::pipe()?;
                 let (mut error_reader, error_writer) = os_pipe::pipe()?;
@@ -103,7 +99,18 @@ impl Backend {
 
                 write_done(id, exit_code.into())
             }
-            Tool::Remote { .. } => panic!(),
+            Command::SetDirectory(dir) => {
+                match env::set_current_dir(dir) {
+                    Ok(_) => write_done(id, 0),
+                    Err(e) => {
+                        write_pipe(stdout_pipe, format!("Error: {:?}", e).into_bytes())?;
+                        write_done(id, 1)
+                    }
+                }
+
+                
+            },
+            Command::Remote { .. } => panic!(),
         }
     }
 }
