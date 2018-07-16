@@ -1,12 +1,6 @@
-[package]
-authors = ["Joshua Warner <joshuawarner32@gmail.com>"]
-name = "nak"
-version = "0.1.0"
+[workspace]
 
-[dependencies]
-base64 = "0.9.2"
-failure = "0.1.1"
-futures-preview = "0.2.2"
-liner = "0.4.4"
-os_pipe = "0.6.1"
-tokio = "0.1.7"
+members = [
+    "frontend",
+    "backend",
+]
