@@ -1,28 +1,32 @@
-#[macro_use]
 extern crate failure;
+#[macro_use]
+extern crate serde_derive;
 extern crate os_pipe;
 extern crate futures;
 extern crate tokio;
 extern crate base64;
 extern crate liner;
+extern crate serde;
+extern crate serde_json;
 
+use os_pipe::{PipeReader, PipeWriter, IntoStdio};
+use std::io::{Read, Write, BufRead, BufReader};
 use std::borrow::Borrow;
-use os_pipe::IntoStdio;
-use std::io::Read;
 use std::str;
 use std::io;
 use std::process as pr;
+use std::thread;
+use std::sync::mpsc;
 
 use failure::Error;
 use futures::{Future, Stream, Async};
 use futures::task::Context;
-use futures::executor::ThreadPool;
 
 mod parse;
 
 use parse::Parser;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Tool {
     Path(String),
     Remote {
@@ -30,77 +34,103 @@ pub enum Tool {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Args {
     args: Vec<String>
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Command {
     tool: Tool,
     args: Args,
 }
 
-pub enum Response {
-    Text(String),
-    Stream {
-        stdout: Box<Stream<Item=String, Error=Error>>,
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Rpc {
+    BeginCommand {
+        id: usize,
+        command: Command,
     },
-    Remote(Box<dyn Remote>),
-}
-
-struct SingleStream {
-    out: Option<String>
-}
-
-impl Stream for SingleStream {
-    type Item = String;
-    type Error = Error;
-
-    fn poll_next(
-        &mut self,
-        _cx: &mut Context
-    ) -> Result<Async<Option<Self::Item>>, Self::Error> {
-        match self.out.take() {
-            Some(out) => Ok(Async::Ready(Some(out))),
-            None => Ok(Async::Ready(None))
-        }
+    CommandResult {
+        id: usize,
+        output: String,
     }
 }
 
-pub trait Remote {
-    fn run(&mut self, c: Command) -> Result<Response, Error>;
+// pub enum Response {
+//     Text(String),
+//     Stream {
+//         stdout: Box<Stream<Item=String, Error=Error>>,
+//     },
+//     Remote(Box<dyn Remote>),
+// }
+
+pub struct Response {
+    id: usize
 }
 
-pub struct SimpleRemote;
+pub struct BackendRemote {
+    next_id: usize,
+    input: PipeWriter,
+    output: mpsc::Receiver<(usize, String)>,
+}
 
-impl Remote for SimpleRemote {
-    fn run(&mut self, c: Command) -> Result<Response,
- Error> {
-        match c.tool {
-            Tool::Path(path) => {
-                let mut cmd = pr::Command::new(path);
-                cmd.args(&c.args.args);
+fn launch_backend() -> Result<BackendRemote, Error> {
+    let mut cmd = pr::Command::new("nak-backend");
 
-                let (mut reader, writer) = os_pipe::pipe()?;
+    let (output_reader, output_writer) = os_pipe::pipe()?;
+    let (input_reader, input_writer) = os_pipe::pipe()?;
 
-                cmd.stdout(writer.into_stdio());
+    cmd.stdout(output_writer.into_stdio());
+    cmd.stdin(input_reader.into_stdio());
 
-                let mut handle = cmd.spawn()?;
+    let _child = cmd.spawn()?;
 
-                drop(cmd);
+    drop(cmd);
 
-                let mut output = String::new();
+    let (sender, receiver) = mpsc::channel();
+    let mut output = BufReader::new(output_reader);
 
-                reader.read_to_string(&mut output)?;
-                handle.wait()?;
+    thread::spawn(move || {
+        loop {
+            let mut input = String::new();
+            match output.read_line(&mut input) {
+                Ok(_) => {
+                    let rpc: Rpc = serde_json::from_str(&input).unwrap();
 
-                Ok(Response::Stream {
-                    stdout: Box::new(SingleStream { out: Some(output) })
-                })
+                    match rpc {
+                        Rpc::BeginCommand { .. } => panic!(),
+                        Rpc::CommandResult { id, output } => {
+                            sender.send((id, output)).unwrap();
+                        }
+                    }
+                }
+                Err(error) => eprintln!("error: {}", error),
             }
-            Tool::Remote { .. } => panic!(),
         }
+    });
+
+    Ok(BackendRemote {
+        next_id: 0,
+        input: input_writer,
+        output: receiver,
+    })
+}
+
+impl BackendRemote {
+    fn run(&mut self, c: Command) -> Result<Response, Error> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let serialized = serde_json::to_string(&Rpc::BeginCommand {
+            id,
+            command: c
+        })?;
+
+        write!(self.input, "{}\n", serialized)?;
+
+        Ok(Response {
+            id
+        })
     }
 }
 
@@ -112,7 +142,7 @@ enum Shell {
 }
 
 trait Reader {
-    fn get_command(&mut self, remote: &dyn Remote) -> Result<Shell, Error>;
+    fn get_command(&mut self) -> Result<Shell, Error>;
 }
 
 fn parse_command_simple(input: &str) -> Result<Shell, Error> {
@@ -143,7 +173,7 @@ impl SimpleReader {
 }
 
 impl Reader for SimpleReader {
-    fn get_command(&mut self, _: &dyn Remote) -> Result<Shell, Error> {
+    fn get_command(&mut self) -> Result<Shell, Error> {
         let res = match self.ctx.read_line("[prompt]$ ", &mut |_| {}) {
             Ok(res) => res,
             Err(e) => {
@@ -192,48 +222,39 @@ fn parse_simple() {
     }));
 }
 
-fn run_to_completion(s: Box<dyn Stream<Item=String, Error=Error>>)
-    -> impl Future<Item=(), Error=Error>
-{
-    WritingFuture(s)
-}
-
-fn one_loop(remote: &mut dyn Remote, reader: &mut dyn Reader)
+fn one_loop(remote: &mut BackendRemote, reader: &mut dyn Reader)
     -> Result<bool, Error>
 {
-    match reader.get_command(remote.borrow())? {
+    match reader.get_command()? {
         Shell::Exit => return Ok(false),
         Shell::DoNothing => {}
         Shell::Run(cmd) => {
             let res = remote.run(cmd)?;
-        
-            match res {
-                Response::Text(text) => {
-                    println!("{}", text);
-                }
-                Response::Stream { stdout } => {
-                    ThreadPool::new()?
-                        .run(run_to_completion(stdout))?;
-                }
-                Response::Remote(remote) => {
-                    remote_run(remote, reader)?;
-                }
+
+            loop {
+                let (id, output) = remote.output.recv()?;
+
+                assert_eq!(id, res.id);
+
+                print!("{}", output);
+                break;
             }
         }
     }
     Ok(true)
 }
 
-fn remote_run(mut remote: Box<dyn Remote>, reader: &mut dyn Reader)
+fn remote_run(mut remote: BackendRemote, reader: &mut dyn Reader)
     -> Result<(), Error>
 {
-    while one_loop(remote.as_mut(), reader)? {}
+    while one_loop(&mut remote, reader)? {}
     Ok(())
 }
 
 fn main() {
     let mut reader = SimpleReader::new();
-    let remote = Box::new(SimpleRemote);
+    // let remote = Box::new(SimpleRemote);
+    let remote = launch_backend().unwrap();
 
     remote_run(remote, &mut reader).unwrap();
 }
