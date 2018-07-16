@@ -46,21 +46,28 @@ pub struct Command {
 pub enum RpcRequest {
     BeginCommand {
         id: usize,
+        stdout_pipe: usize,
+        stderr_pipe: usize,
         command: Command,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RpcResponse {
+    Pipe {
+        id: usize,
+        data: Vec<u8>,
+    },
     CommandDone {
         id: usize,
-        output: String,
         exit_code: i64,
-    }
+    },
 }
 
 pub struct Response {
-    id: usize
+    id: usize,
+    stdout_pipe: usize,
+    stderr_pipe: usize,
 }
 
 pub struct BackendRemote {
@@ -107,18 +114,30 @@ fn launch_backend() -> Result<BackendRemote, Error> {
 }
 
 impl BackendRemote {
-    fn run(&mut self, c: Command) -> Result<Response, Error> {
-        let id = self.next_id;
+
+    fn next_id(&mut self) -> usize {
+        let res = self.next_id;
         self.next_id += 1;
+        res
+    }
+
+    fn run(&mut self, c: Command) -> Result<Response, Error> {
+        let id = self.next_id();
+        let stdout_pipe = self.next_id();
+        let stderr_pipe = self.next_id();
         let serialized = serde_json::to_string(&RpcRequest::BeginCommand {
             id,
+            stdout_pipe,
+            stderr_pipe,
             command: c
         })?;
 
         write!(self.input, "{}\n", serialized)?;
 
         Ok(Response {
-            id
+            id,
+            stdout_pipe,
+            stderr_pipe,
         })
     }
 }
@@ -204,9 +223,17 @@ fn one_loop(remote: &mut BackendRemote, reader: &mut dyn Reader)
                 let msg = remote.output.recv()?;
 
                 match msg {
-                    RpcResponse::CommandDone { id, output, exit_code } => {
+                    RpcResponse::Pipe { id, data } => {
+                        if id == res.stdout_pipe {
+                            io::stdout().write(&data)?;
+                        } else if id == res.stderr_pipe {
+                            io::stderr().write(&data)?;
+                        } else {
+                            assert!(false);
+                        }
+                    }
+                    RpcResponse::CommandDone { id, exit_code } => {
                         assert_eq!(id, res.id);
-                        print!("{}", output);
                         println!("exit_code: {}", exit_code);
                         break;
                     }
