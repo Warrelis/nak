@@ -5,10 +5,11 @@ extern crate serde_json;
 extern crate failure;
 extern crate os_pipe;
 
-use std::io::Write;
-use std::io::Read;
+use os_pipe::PipeWriter;
+use std::io::{Write, Read, BufRead, BufReader};
 use std::io;
 use std::env;
+use std::thread;
 
 use failure::Error;
 use std::process as pr;
@@ -18,14 +19,17 @@ use os_pipe::IntoStdio;
 pub enum Command {
     Unknown(String, Args),
     SetDirectory(String),
-    Remote {
-        host: String,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Args {
     args: Vec<String>
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Multiplex<M> {
+    remote_id: usize,
+    message: M
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -36,6 +40,10 @@ pub enum RpcRequest {
         stderr_pipe: usize,
         command: Command,
     },
+    BeginRemote {
+        id: usize,
+        command: Command,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,22 +59,39 @@ pub enum RpcResponse {
 }
 
 fn write_pipe(id: usize, data: Vec<u8>) -> Result<(), Error> {
-    write!(io::stdout(), "{}\n", serde_json::to_string(&RpcResponse::Pipe {
-        id,
-        data,
+    write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
+        remote_id: 0,
+        message: RpcResponse::Pipe {
+            id,
+            data,
+        },
     })?)?;
+    io::stdout().flush().unwrap();
     Ok(())
 }
 
 fn write_done(id: usize, exit_code: i64) -> Result<(), Error> {
-    write!(io::stdout(), "{}\n", serde_json::to_string(&RpcResponse::CommandDone {
-        id,
-        exit_code,
+    write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
+        remote_id: 0,
+        message: RpcResponse::CommandDone {
+            id,
+            exit_code,
+        },
     })?)?;
+    io::stdout().flush().unwrap();
     Ok(())
 }
 
-pub struct Backend;
+pub struct BackendRemote {
+    backend_id: usize,
+    next_id: usize,
+    input: PipeWriter,
+}
+
+#[derive(Default)]
+pub struct Backend {
+    subbackends: Vec<BackendRemote>,
+}
 
 impl Backend {
     fn run(&mut self, id: usize, stdout_pipe: usize, stderr_pipe: usize, c: Command) -> Result<(), Error> {
@@ -95,6 +120,15 @@ impl Backend {
                     write_pipe(stdout_pipe, buf[..len].to_vec())?;
                 }
 
+                loop {
+                    let len = error_reader.read(&mut buf)?;
+                    if len == 0 {
+                        break;
+                    }
+                    write_pipe(stderr_pipe, buf[..len].to_vec())?;
+                }
+
+
                 let exit_code = handle.wait()?.code().unwrap_or(-1);
 
                 write_done(id, exit_code.into())
@@ -107,16 +141,71 @@ impl Backend {
                         write_done(id, 1)
                     }
                 }
+            }
+        }
+    }
 
-                
-            },
-            Command::Remote { .. } => panic!(),
+    fn begin_remote(&mut self, id: usize, c: Command) -> Result<(), Error> {
+        match c {
+            Command::Unknown(path, args) => {
+                let mut cmd = pr::Command::new(path);
+                cmd.args(&args.args);
+
+                let (output_reader, output_writer) = os_pipe::pipe()?;
+                let (input_reader, input_writer) = os_pipe::pipe()?;
+
+                cmd.stdout(output_writer.into_stdio());
+                cmd.stdin(input_reader.into_stdio());
+
+                // eprintln!("spawn");
+                let _child = cmd.spawn()?;
+
+                drop(cmd);
+
+                let mut output = BufReader::new(output_reader);
+
+                let mut input = String::new();
+                output.read_line(&mut input)?;
+                assert_eq!(input, "nxQh6wsIiiFomXWE+7HQhQ==\n");
+                // eprintln!("done");
+
+                let id = self.subbackends.len() + 1;
+
+                thread::spawn(move || {
+                    loop {
+                        let mut input = String::new();
+                        match output.read_line(&mut input) {
+                            Ok(_) => {
+                                // eprintln!("read {}", input);
+                                let mut rpc: Multiplex<RpcResponse> = serde_json::from_str(&input).unwrap();
+                                rpc.remote_id = id;
+
+                                write!(io::stdout(), "{}\n", serde_json::to_string(&rpc).unwrap()).unwrap();
+                            }
+                            Err(error) => eprintln!("error: {}", error),
+                        }
+                    }
+                });
+
+                self.subbackends.push(BackendRemote {
+                    backend_id: id,
+                    next_id: 0,
+                    input: input_writer,
+                });
+
+                Ok(())
+            }
+            _ => panic!(),
         }
     }
 }
 
 fn main() {
-    let mut backend = Backend;
+    let mut backend = Backend::default();
+
+    // eprintln!("spawn_self");
+    write!(io::stdout(), "nxQh6wsIiiFomXWE+7HQhQ==\n").unwrap();
+    io::stdout().flush().unwrap();
 
     loop {
         let mut input = String::new();
@@ -125,13 +214,31 @@ fn main() {
                 if n == 0 {
                     break;
                 }
+                // eprintln!("part {}", input);
 
-                let rpc: RpcRequest = serde_json::from_str(&input).unwrap();
+                let rpc: Multiplex<RpcRequest> = serde_json::from_str(&input).unwrap();
 
-                match rpc {
-                    RpcRequest::BeginCommand { id, stdout_pipe, stderr_pipe, command } => {
-                        backend.run(id, stdout_pipe, stderr_pipe, command).unwrap();
+                if rpc.remote_id == 0 {
+                    match rpc.message {
+                        RpcRequest::BeginCommand { id, stdout_pipe, stderr_pipe, command } => {
+                            backend.run(id, stdout_pipe, stderr_pipe, command).unwrap();
+                        }
+                        RpcRequest::BeginRemote { id, command } => {
+                            backend.begin_remote(id, command).unwrap();
+                        }
                     }
+                } else {
+                    let input = serde_json::to_string(&Multiplex {
+                        remote_id: 0,
+                        message: rpc.message,
+                    }).unwrap();
+                    // eprintln!("write {} {}", rpc.remote_id - 1, input);
+                    let pipe = &mut backend.subbackends[rpc.remote_id - 1].input;
+                    write!(
+                        pipe,
+                        "{}\n",
+                        input).unwrap();
+                    pipe.flush().unwrap();
                 }
             }
             Err(error) => {

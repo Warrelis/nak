@@ -28,14 +28,17 @@ use parse::Parser;
 pub enum Command {
     Unknown(String, Args),
     SetDirectory(String),
-    Remote {
-        host: String,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Args {
     args: Vec<String>
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Multiplex<M> {
+    remote_id: usize,
+    message: M
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -46,6 +49,10 @@ pub enum RpcRequest {
         stderr_pipe: usize,
         command: Command,
     },
+    BeginRemote {
+        id: usize,
+        command: Command,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -66,10 +73,15 @@ pub struct Response {
     stderr_pipe: usize,
 }
 
+pub struct Remote {
+    id: usize,
+}
+
 pub struct BackendRemote {
     next_id: usize,
+    remotes: Vec<Remote>,
     input: PipeWriter,
-    output: mpsc::Receiver<RpcResponse>,
+    output: mpsc::Receiver<Multiplex<RpcResponse>>,
 }
 
 fn launch_backend() -> Result<BackendRemote, Error> {
@@ -88,12 +100,16 @@ fn launch_backend() -> Result<BackendRemote, Error> {
     let (sender, receiver) = mpsc::channel();
     let mut output = BufReader::new(output_reader);
 
+    let mut input = String::new();
+    output.read_line(&mut input)?;
+    assert_eq!(input, "nxQh6wsIiiFomXWE+7HQhQ==\n");
+
     thread::spawn(move || {
         loop {
             let mut input = String::new();
             match output.read_line(&mut input) {
                 Ok(_) => {
-                    let rpc: RpcResponse = serde_json::from_str(&input).unwrap();
+                    let rpc: Multiplex<RpcResponse> = serde_json::from_str(&input).unwrap();
 
                     sender.send(rpc).unwrap();
                 }
@@ -104,6 +120,7 @@ fn launch_backend() -> Result<BackendRemote, Error> {
 
     Ok(BackendRemote {
         next_id: 0,
+        remotes: Vec::new(),
         input: input_writer,
         output: receiver,
     })
@@ -116,15 +133,22 @@ impl BackendRemote {
         res
     }
 
+    fn push_remote(&mut self, remote: Remote) {
+        self.remotes.push(remote);
+    }
+
     fn run(&mut self, c: Command) -> Result<Response, Error> {
         let id = self.next_id();
         let stdout_pipe = self.next_id();
         let stderr_pipe = self.next_id();
-        let serialized = serde_json::to_string(&RpcRequest::BeginCommand {
-            id,
-            stdout_pipe,
-            stderr_pipe,
-            command: c
+        let serialized = serde_json::to_string(&Multiplex {
+            remote_id: self.remotes.len(),
+            message: RpcRequest::BeginCommand {
+                id,
+                stdout_pipe,
+                stderr_pipe,
+                command: c
+            },
         })?;
 
         write!(self.input, "{}\n", serialized)?;
@@ -135,17 +159,36 @@ impl BackendRemote {
             stderr_pipe,
         })
     }
+
+    fn begin_remote(&mut self, c: Command) -> Result<Remote, Error> {
+        let id = self.next_id();
+
+        let serialized = serde_json::to_string(&Multiplex {
+            remote_id: 0,
+            message: RpcRequest::BeginRemote {
+                id,
+                command: c
+            },
+        })?;
+
+        write!(self.input, "{}\n", serialized)?;
+
+        Ok(Remote {
+            id,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 enum Shell {
     DoNothing,
     Run(Command),
+    BeginRemote(Command),
     Exit,
 }
 
 trait Reader {
-    fn get_command(&mut self) -> Result<Shell, Error>;
+    fn get_command(&mut self, backend: &BackendRemote) -> Result<Shell, Error>;
 }
 
 fn check_single_arg(items: &[&str]) -> Result<String, Error> {
@@ -169,6 +212,15 @@ fn parse_command_simple(input: &str) -> Result<Shell, Error> {
 
     Ok(Shell::Run(match head {
         "cd" => Command::SetDirectory(check_single_arg(&cmd.body())?),
+        "nak" => {
+            let mut it = cmd.body().into_iter();
+            let head = it.next().unwrap().to_string();
+
+            return Ok(Shell::BeginRemote(Command::Unknown(
+                head,
+                Args { args: it.map(String::from).collect() },
+            )));
+        }
         _ => Command::Unknown(
             head.to_string(),
             Args { args: cmd.body().into_iter().map(String::from).collect() },
@@ -189,8 +241,8 @@ impl SimpleReader {
 }
 
 impl Reader for SimpleReader {
-    fn get_command(&mut self) -> Result<Shell, Error> {
-        let res = match self.ctx.read_line("[prompt]$ ", &mut |_| {}) {
+    fn get_command(&mut self, backend: &BackendRemote) -> Result<Shell, Error> {
+        let res = match self.ctx.read_line(format!("[{}]$ ", backend.remotes.len()), &mut |_| {}) {
             Ok(res) => res,
             Err(e) => {
                 return match e.kind() {
@@ -221,16 +273,25 @@ fn parse_simple() {
 fn one_loop(remote: &mut BackendRemote, reader: &mut dyn Reader)
     -> Result<bool, Error>
 {
-    match reader.get_command()? {
-        Shell::Exit => return Ok(false),
+    match reader.get_command(remote)? {
+        Shell::Exit => {
+            if remote.remotes.pop().is_none() {
+                return Ok(false)
+            }
+        }
         Shell::DoNothing => {}
+        Shell::BeginRemote(cmd) => {
+            let res = remote.begin_remote(cmd)?;
+            remote.push_remote(res);
+        }
         Shell::Run(cmd) => {
             let res = remote.run(cmd)?;
 
             loop {
                 let msg = remote.output.recv()?;
 
-                match msg {
+                assert_eq!(msg.remote_id, remote.remotes.len());
+                match msg.message {
                     RpcResponse::Pipe { id, data } => {
                         if id == res.stdout_pipe {
                             io::stdout().write(&data)?;
