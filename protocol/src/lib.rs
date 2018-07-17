@@ -58,6 +58,10 @@ pub enum RpcRequest {
         id: usize,
         path: String,
     },
+    FinishEdit {
+        id: usize,
+        data: Vec<u8>,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -73,6 +77,12 @@ pub enum RpcResponse {
     DirectoryListing {
         id: usize,
         items: Vec<String>,
+    },
+    EditRequest {
+        command_id: usize,
+        edit_id: usize,
+        name: String,
+        data: Vec<u8>,
     }
 }
 
@@ -197,6 +207,19 @@ impl<T: Transport> Endpoint<T> {
 
         self.trans.send(&ser_to_endpoint(process_state.parent,  RpcRequest::CancelCommand {
             id,
+        }))?;
+
+        Ok(())
+    }
+
+    pub fn finish_edit(&mut self, command_id: usize, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
+        let process_state = self.jobs.get(&command_id).expect("process not running");
+
+        assert!(self.remotes.contains_key(&process_state.parent));
+
+        self.trans.send(&ser_to_endpoint(process_state.parent,  RpcRequest::FinishEdit {
+            id: edit_id,
+            data,
         }))?;
 
         Ok(())

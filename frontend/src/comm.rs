@@ -108,6 +108,11 @@ impl BackendRemote {
         Ok(self.endpoint.close_remote(cur_remote)?)
     }
 
+    pub fn finish_edit(&mut self, command_id: usize, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
+        // let cur_remote = self.remotes.pop().unwrap();
+        Ok(self.endpoint.finish_edit(command_id, edit_id, data)?)
+    }
+
     pub fn cancel(&mut self, id: usize) -> Result<(), Error> {
         Ok(self.endpoint.close_process(id)?)
     }

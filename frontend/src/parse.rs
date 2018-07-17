@@ -102,7 +102,7 @@ pub struct Parser {
 
 fn is_word_char(ch: u8) -> bool {
     match ch {
-        b'a'...b'z' | b'A'...b'Z'|b'0'...b'9'|b'.'|b'-' => true,
+        b'a'...b'z' | b'A'...b'Z'|b'0'...b'9'|b'.'|b'-'|b'_'|b'/'|b'{'|b'}'|b'$' => true,
         _ => false,
     }
 }
@@ -135,19 +135,6 @@ impl Parser {
                         children: vec![],
                     })
                 }
-                b'a'...b'z' | b'A'...b'Z'|b'0'...b'9'|b'.'|b'-' => {
-                    let begin = pos;
-                    pos += 1;
-                    while pos < bytes.len() && is_word_char(bytes[pos]) {
-                        pos += 1;
-                    }
-                    children.push(Node {
-                        ty: NodeType::Word,
-                        begin,
-                        end: pos,
-                        children: vec![],
-                    })
-                }
                 b'"' => {
                     let begin = pos;
                     pos += 1;
@@ -161,6 +148,23 @@ impl Parser {
                         end: pos,
                         children: vec![],
                     })
+                }
+                ch => {
+                    if is_word_char(ch) {
+                        let begin = pos;
+                        pos += 1;
+                        while pos < bytes.len() && is_word_char(bytes[pos]) {
+                            pos += 1;
+                        }
+                        children.push(Node {
+                            ty: NodeType::Word,
+                            begin,
+                            end: pos,
+                            children: vec![],
+                        })
+                    } else {
+                        panic!();
+                    }
                 }
                 _ => panic!(),
             }
