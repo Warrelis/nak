@@ -24,8 +24,10 @@ use failure::Error;
 
 mod parse;
 mod edit;
+mod prefs;
 
 use parse::Parser;
+use prefs::Prefs;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Command {
@@ -285,12 +287,14 @@ impl liner::Completer for SimpleCompleter {
 }
 
 struct SimpleReader {
+    prefs: Prefs,
     ctx: liner::Context,
 }
 
 impl SimpleReader {
-    fn new() -> SimpleReader {
+    fn new(prefs: Prefs) -> SimpleReader {
         SimpleReader {
+            prefs,
             ctx: liner::Context {
                 history: liner::History::new(),
                 completer: Some(Box::new(SimpleCompleter)),
@@ -417,6 +421,7 @@ fn remote_run(receiver: mpsc::Receiver<Event>, remote: BackendRemote, reader: Bo
 }
 
 fn main() {
+    let prefs = Prefs::load();
     // let remote = Box::new(SimpleRemote);
     let (sender, receiver) = mpsc::channel();
 
@@ -428,5 +433,5 @@ fn main() {
 
     let remote = launch_backend(sender).unwrap();
 
-    remote_run(receiver, remote, Box::new(SimpleReader::new())).unwrap();
+    remote_run(receiver, remote, Box::new(SimpleReader::new(prefs))).unwrap();
 }
