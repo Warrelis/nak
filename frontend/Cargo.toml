@@ -2,7 +2,6 @@
 authors = ["Joshua Warner <joshw@dropbox.com>"]
 name = "frontend"
 version = "0.1.0"
-
 [dependencies]
 base64 = "0.9.2"
 ctrlc = "*"
@@ -14,4 +13,5 @@ os_pipe = "0.6.1"
 serde = "*"
 serde_derive = "*"
 serde_json = "*"
+termion = "*"
 tokio = "0.1.7"

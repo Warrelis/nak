@@ -11,13 +11,18 @@ extern crate serde;
 extern crate serde_json;
 extern crate ctrlc;
 extern crate libc;
+extern crate termion;
 
-use os_pipe::{PipeWriter, IntoStdio};
-use std::io::{Write, BufRead, BufReader};
+use termion::input::TermRead;
+use termion::raw::IntoRawMode;
+use liner::{KeyMap, Editor, Buffer, KeyBindings, Emacs};
+use liner::EventHandler;
+use std::io::stdin;
+use std::io::stdout;
+use std::io::Write;
 use std::str;
-use std::{io, fs};
-use std::process as pr;
-use std::thread;
+use std::io;
+use std::env;
 use std::sync::mpsc;
 
 use failure::Error;
@@ -25,9 +30,11 @@ use failure::Error;
 mod parse;
 mod edit;
 mod prefs;
+mod comm;
 
 use parse::Parser;
 use prefs::Prefs;
+use comm::{BackendRemote, launch_backend};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Command {
@@ -99,145 +106,9 @@ pub struct Remote {
     id: usize,
 }
 
-pub struct BackendRemote {
-    next_id: usize,
-    remotes: Vec<Remote>,
-    input: PipeWriter,
-}
-
-enum Event {
+pub enum Event {
     Remote(Multiplex<RpcResponse>),
     CtrlC,
-}
-
-fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Error> {
-
-    let (output_reader, output_writer) = os_pipe::pipe()?;
-    let (input_reader, input_writer) = os_pipe::pipe()?;
-
-    let pid = unsafe { libc::fork() };
-
-    if pid == 0 {
-        let mut cmd = pr::Command::new("nak-backend");
-
-        cmd.stdout(output_writer.into_stdio());
-        cmd.stderr(fs::OpenOptions::new().create(true).append(true).open("/tmp/nak.log")?);
-        cmd.stdin(input_reader.into_stdio());
-
-        let _child = cmd.spawn()?;
-
-        drop(cmd);
-        unsafe { libc::exit(0) };
-    }
-
-    let mut output = BufReader::new(output_reader);
-
-    let mut input = String::new();
-    output.read_line(&mut input)?;
-    assert_eq!(input, "nxQh6wsIiiFomXWE+7HQhQ==\n");
-
-    thread::spawn(move || {
-        loop {
-            let mut input = String::new();
-            match output.read_line(&mut input) {
-                Ok(n) => {
-                    if n == 0 {
-                        continue;
-                    }
-                    let rpc: Multiplex<RpcResponse> = serde_json::from_str(&input).unwrap();
-
-                    sender.send(Event::Remote(rpc)).unwrap();
-                }
-                Err(error) => eprintln!("error: {}", error),
-            }
-        }
-    });
-
-    Ok(BackendRemote {
-        next_id: 0,
-        remotes: Vec::new(),
-        input: input_writer,
-    })
-}
-
-impl BackendRemote {
-    fn next_id(&mut self) -> usize {
-        let res = self.next_id;
-        self.next_id += 1;
-        res
-    }
-
-    fn push_remote(&mut self, remote: Remote) {
-        self.remotes.push(remote);
-    }
-
-    fn run(&mut self, c: Command) -> Result<Pipes, Error> {
-        let id = self.next_id();
-        let stdout_pipe = self.next_id();
-        let stderr_pipe = self.next_id();
-        let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
-            message: RpcRequest::BeginCommand {
-                id,
-                stdout_pipe,
-                stderr_pipe,
-                command: c
-            },
-        })?;
-
-        write!(self.input, "{}\n", serialized)?;
-
-        Ok(Pipes {
-            id,
-            stdout_pipe,
-            stderr_pipe,
-        })
-    }
-
-    fn begin_remote(&mut self, c: Command) -> Result<Remote, Error> {
-        let id = self.next_id();
-
-        let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
-            message: RpcRequest::BeginRemote {
-                id,
-                command: c
-            },
-        })?;
-
-        write!(self.input, "{}\n", serialized)?;
-
-        Ok(Remote {
-            id,
-        })
-    }
-
-    fn end_remote(&mut self, remote: Remote) -> Result<(), Error> {
-        let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
-            message: RpcRequest::EndRemote {
-                id: remote.id,
-            },
-        })?;
-
-        write!(self.input, "{}\n", serialized)?;
-
-        Ok(())
-    }
-
-    fn cancel(&mut self, id: usize) -> Result<(), Error> {
-
-        let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
-            message: RpcRequest::CancelCommand { id },
-        })?;
-
-        eprintln!("caught CtrlC");
-        write!(self.input, "{}\n", serialized)?;
-        self.input.flush()?;
-
-        Ok(())
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -250,6 +121,7 @@ enum Shell {
 
 trait Reader {
     fn get_command(&mut self, backend: &BackendRemote) -> Result<Shell, Error>;
+    fn save_history(&mut self);
 }
 
 fn check_single_arg(items: &[&str]) -> Result<String, Error> {
@@ -308,33 +180,77 @@ struct SimpleReader {
 }
 
 impl SimpleReader {
-    fn new(prefs: Prefs) -> SimpleReader {
-        SimpleReader {
-            prefs,
-            ctx: liner::Context {
-                history: liner::History::new(),
-                completer: Some(Box::new(SimpleCompleter)),
-                word_divider_fn: Box::new(liner::get_buffer_words),
-                key_bindings: liner::KeyBindings::Emacs,
+    fn new(prefs: Prefs) -> Result<SimpleReader, Error> {
+        let mut history = liner::History::new();
+        history.set_file_name(Some(env::home_dir().unwrap().join(".config").join("nak").join("history.nak").into_os_string().into_string().unwrap()));
+        match history.load_history() {
+            Ok(_) => {}
+            Err(e) => {
+                if e.kind() != io::ErrorKind::NotFound {
+                    return Err(e.into());
+                }
             }
         }
+        Ok(SimpleReader {
+            prefs,
+            ctx: liner::Context {
+                history,
+                completer: Some(Box::new(SimpleCompleter)),
+                word_divider_fn: Box::new(liner::get_buffer_words),
+                key_bindings: KeyBindings::Emacs,
+            }
+        })
     }
 }
 
 impl Reader for SimpleReader {
     fn get_command(&mut self, backend: &BackendRemote) -> Result<Shell, Error> {
-        let res = match self.ctx.read_line(format!("[{}]$ ", backend.remotes.len()), &mut |_| {}) {
-            Ok(res) => res,
-            Err(e) => {
-                return match e.kind() {
-                    io::ErrorKind::Interrupted => Ok(Shell::DoNothing),
-                    io::ErrorKind::UnexpectedEof => Ok(Shell::Exit),
-                    _ => Err(e.into()),
+
+        fn handle_keys<'a, T, W: Write, M: KeyMap<'a, W, T>>(
+            mut keymap: M,
+            mut handler: &mut EventHandler<W>,
+        ) -> io::Result<String>
+        where
+            String: From<M>,
+        {
+            let stdin = stdin();
+            for c in stdin.keys() {
+                if try!(keymap.handle_key(c.unwrap(), handler)) {
+                    break;
+                }
+            }
+
+            Ok(keymap.into())
+        }
+
+        let prompt = format!("[{}]$ ", backend.remotes.len());
+
+        let buffer = Buffer::new();
+
+        let res = {
+            let stdout = stdout().into_raw_mode().unwrap();
+            let ed = Editor::new_with_init_buffer(stdout, prompt, &mut self.ctx, buffer)?;
+            match handle_keys(Emacs::new(ed), &mut |_| {}) {
+                Ok(res) => res,
+                Err(e) => {
+                    return match e.kind() {
+                        io::ErrorKind::Interrupted => Ok(Shell::DoNothing),
+                        io::ErrorKind::UnexpectedEof => Ok(Shell::Exit),
+                        _ => Err(e.into()),
+                    }
                 }
             }
         };
 
-        Ok(parse_command_simple(&self.prefs, &res)?)
+        let parsed = parse_command_simple(&self.prefs, &res)?;
+
+        self.ctx.history.push(Buffer::from(res))?;
+
+        Ok(parsed)
+    }
+
+    fn save_history(&mut self) {
+        self.ctx.history.commit_history()
     }
 }
 
@@ -433,6 +349,9 @@ fn remote_run(receiver: mpsc::Receiver<Event>, remote: BackendRemote, reader: Bo
     };
 
     while exec.one_loop()? {}
+
+    exec.reader.save_history();
+
     Ok(())
 }
 
@@ -449,6 +368,7 @@ fn main() -> Result<(), Error> {
 
     let remote = launch_backend(sender)?;
 
-    remote_run(receiver, remote, Box::new(SimpleReader::new(prefs)))?;
+    remote_run(receiver, remote, Box::new(SimpleReader::new(prefs)?))?;
+
     Ok(())
 }
