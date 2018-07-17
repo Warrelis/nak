@@ -2,6 +2,7 @@
 authors = ["Joshua Warner <joshw@dropbox.com>"]
 name = "backend"
 version = "0.1.0"
+
 [dependencies]
 base64 = "0.9.2"
 failure = "0.1.1"
@@ -13,3 +14,4 @@ ctrlc = "*"
 serde_derive = "*"
 serde_json = "*"
 tokio = "0.1.7"
+protocol = { path = "../protocol" }

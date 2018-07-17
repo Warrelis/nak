@@ -5,6 +5,7 @@ extern crate serde_json;
 extern crate failure;
 extern crate os_pipe;
 extern crate ctrlc;
+extern crate protocol;
 
 use std::collections::HashMap;
 use std::io::{Write, Read, BufRead, BufReader};
@@ -19,62 +20,7 @@ use std::process as pr;
 use os_pipe::IntoStdio;
 use os_pipe::PipeWriter;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Command {
-    Unknown(String, Args),
-    SetDirectory(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Args {
-    args: Vec<String>
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Multiplex<M> {
-    remote_id: usize,
-    message: M
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum RpcRequest {
-    BeginCommand {
-        id: usize,
-        stdout_pipe: usize,
-        stderr_pipe: usize,
-        command: Command,
-    },
-    CancelCommand {
-        id: usize,
-    },
-    BeginRemote {
-        id: usize,
-        command: Command,
-    },
-    EndRemote {
-        id: usize,
-    },
-    ListDirectory {
-        id: usize,
-        path: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum RpcResponse {
-    Pipe {
-        id: usize,
-        data: Vec<u8>,
-    },
-    CommandDone {
-        id: usize,
-        exit_code: i64,
-    },
-    DirectoryListing {
-        id: usize,
-        items: Vec<String>,
-    }
-}
+use protocol::{Multiplex, RpcResponse, RpcRequest, Command};
 
 fn write_pipe(id: usize, data: Vec<u8>) -> Result<(), Error> {
     write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
@@ -131,7 +77,7 @@ impl Backend {
         match c {
             Command::Unknown(path, args) => {
                 let mut cmd = pr::Command::new(path);
-                cmd.args(&args.args);
+                cmd.args(&args);
 
                 let (mut output_reader, output_writer) = os_pipe::pipe()?;
                 let (mut error_reader, error_writer) = os_pipe::pipe()?;
@@ -202,7 +148,7 @@ impl Backend {
         match c {
             Command::Unknown(path, args) => {
                 let mut cmd = pr::Command::new(path);
-                cmd.args(&args.args);
+                cmd.args(&args);
 
                 let (output_reader, output_writer) = os_pipe::pipe()?;
                 let (input_reader, input_writer) = os_pipe::pipe()?;

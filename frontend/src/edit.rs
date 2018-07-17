@@ -1,5 +1,6 @@
 use prefs::Prefs;
-use {Shell, Args, Command};
+use Shell;
+use protocol::Command;
 use std::io::Write;
 use failure::Error;
 use parse::Parser;
@@ -52,12 +53,12 @@ fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
 
             return Ok(Shell::BeginRemote(Command::Unknown(
                 head,
-                Args { args: it.map(String::from).collect() },
+                it.map(String::from).collect(),
             )));
         }
         _ => Command::Unknown(
             head.to_string(),
-            Args { args: cmd.body().into_iter().map(String::from).collect() },
+            cmd.body().into_iter().map(String::from).collect(),
         )
     }))
 }
@@ -155,10 +156,10 @@ fn parse_simple() {
     let c = parse_command_simple(&Prefs::default(), " test 1 abc 2").unwrap();
     assert_eq!(c, Shell::Run(Command::Unknown(
         String::from("test"),
-        Args {args: vec![
+        vec![
             String::from("1"),
             String::from("abc"),
             String::from("2"),
-        ]}
+        ],
     )));
 }

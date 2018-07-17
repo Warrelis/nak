@@ -12,13 +12,16 @@ extern crate serde_json;
 extern crate ctrlc;
 extern crate libc;
 extern crate termion;
+extern crate protocol;
 
 use std::io::Write;
-use std::str;
 use std::io;
 use std::sync::mpsc;
 
 use failure::Error;
+
+use protocol::{Multiplex, RpcResponse, RpcRequest, Command};
+
 
 mod parse;
 mod edit;
@@ -28,66 +31,6 @@ mod comm;
 use prefs::Prefs;
 use comm::{BackendRemote, launch_backend};
 use edit::{Reader, SimpleReader};
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Command {
-    Unknown(String, Args),
-    SetDirectory(String),
-}
-
-impl Command {
-    pub fn add_args(&mut self, new_args: Vec<String>) {
-        match self {
-            &mut Command::Unknown(_, ref mut args) => {
-                args.args.extend(new_args)
-            }
-            &mut Command::SetDirectory(_) => panic!(), 
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Args {
-    args: Vec<String>
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Multiplex<M> {
-    remote_id: usize,
-    message: M
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum RpcRequest {
-    BeginCommand {
-        id: usize,
-        stdout_pipe: usize,
-        stderr_pipe: usize,
-        command: Command,
-    },
-    CancelCommand {
-        id: usize,
-    },
-    BeginRemote {
-        id: usize,
-        command: Command,
-    },
-    EndRemote {
-        id: usize,
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum RpcResponse {
-    Pipe {
-        id: usize,
-        data: Vec<u8>,
-    },
-    CommandDone {
-        id: usize,
-        exit_code: i64,
-    },
-}
 
 pub struct Pipes {
     id: usize,
@@ -170,6 +113,9 @@ impl Exec {
                                 assert_eq!(id, id);
                                 // println!("exit_code: {}", exit_code);
                                 self.state = TermState::ReadingCommand;
+                            }
+                            RpcResponse::DirectoryListing { .. } => {
+                                panic!();
                             }
                         }
                     }

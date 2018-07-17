@@ -1,0 +1,9 @@
+[package]
+name = "protocol"
+version = "0.1.0"
+authors = ["Joshua Warner <joshw@dropbox.com>"]
+
+[dependencies]
+serde = "*"
+serde_derive = "*"
+serde_json = "*"
