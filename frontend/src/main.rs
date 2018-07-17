@@ -420,8 +420,8 @@ fn remote_run(receiver: mpsc::Receiver<Event>, remote: BackendRemote, reader: Bo
     Ok(())
 }
 
-fn main() {
-    let prefs = Prefs::load();
+fn main() -> Result<(), Error> {
+    let prefs = Prefs::load()?;
     // let remote = Box::new(SimpleRemote);
     let (sender, receiver) = mpsc::channel();
 
@@ -431,7 +431,8 @@ fn main() {
         sender_clone.send(Event::CtrlC).unwrap();
     }).expect("Error setting CtrlC handler");
 
-    let remote = launch_backend(sender).unwrap();
+    let remote = launch_backend(sender)?;
 
-    remote_run(receiver, remote, Box::new(SimpleReader::new(prefs))).unwrap();
+    remote_run(receiver, remote, Box::new(SimpleReader::new(prefs)))?;
+    Ok(())
 }
