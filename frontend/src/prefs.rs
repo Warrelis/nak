@@ -17,7 +17,7 @@ pub struct Prefs {
 impl Prefs {
     pub fn load() -> Result<Prefs, Error> {
         let mut contents = String::new();
-        match File::open(env::home_dir().unwrap().join(".cache").join("nak").join("prefs.nak")) {
+        match File::open(env::home_dir().unwrap().join(".config").join("nak").join("prefs.nak")) {
             Ok(mut f) => {
                 f.read_to_string(&mut contents)?;
 
@@ -32,5 +32,9 @@ impl Prefs {
                 }
             }
         }
+    }
+
+    pub fn expand(&self, key: &str) -> Option<Command> {
+        self.aliases.get(key).cloned()
     }
 }

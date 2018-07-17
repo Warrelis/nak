@@ -35,6 +35,17 @@ pub enum Command {
     SetDirectory(String),
 }
 
+impl Command {
+    pub fn add_args(&mut self, new_args: Vec<String>) {
+        match self {
+            &mut Command::Unknown(_, ref mut args) => {
+                args.args.extend(new_args)
+            }
+            &mut Command::SetDirectory(_) => panic!(), 
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Args {
     args: Vec<String>
@@ -249,7 +260,7 @@ fn check_single_arg(items: &[&str]) -> Result<String, Error> {
     }
 }
 
-fn parse_command_simple(input: &str) -> Result<Shell, Error> {
+fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
     let mut p = Parser::new();
 
     if input.len() == 0 {
@@ -259,6 +270,11 @@ fn parse_command_simple(input: &str) -> Result<Shell, Error> {
     let cmd = p.parse(input);
 
     let head = cmd.head();
+
+    if let Some(mut new_cmd) = prefs.expand(head) {
+        new_cmd.add_args(cmd.body().into_iter().map(String::from).collect());
+        return Ok(Shell::Run(new_cmd));
+    }
 
     Ok(Shell::Run(match head {
         "cd" => Command::SetDirectory(check_single_arg(&cmd.body())?),
@@ -318,13 +334,13 @@ impl Reader for SimpleReader {
             }
         };
 
-        Ok(parse_command_simple(&res)?)
+        Ok(parse_command_simple(&self.prefs, &res)?)
     }
 }
 
 #[test]
 fn parse_simple() {
-    let c = parse_command_simple(" test 1 abc 2").unwrap();
+    let c = parse_command_simple(&Prefs::default(), " test 1 abc 2").unwrap();
     assert_eq!(c, Shell::Run(Command::Unknown(
         String::from("test"),
         Args {args: vec![
