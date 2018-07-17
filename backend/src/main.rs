@@ -8,12 +8,11 @@ extern crate ctrlc;
 
 use std::collections::HashMap;
 use std::io::{Write, Read, BufRead, BufReader};
-use std::io;
-use std::env;
-use std::thread;
+use std::{io, env, fs, thread};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::{Ordering, AtomicBool};
 
 use failure::Error;
 use std::process as pr;
@@ -51,7 +50,14 @@ pub enum RpcRequest {
     BeginRemote {
         id: usize,
         command: Command,
-    }
+    },
+    EndRemote {
+        id: usize,
+    },
+    ListDirectory {
+        id: usize,
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -64,6 +70,10 @@ pub enum RpcResponse {
         id: usize,
         exit_code: i64,
     },
+    DirectoryListing {
+        id: usize,
+        items: Vec<String>,
+    }
 }
 
 fn write_pipe(id: usize, data: Vec<u8>) -> Result<(), Error> {
@@ -90,15 +100,29 @@ fn write_done(id: usize, exit_code: i64) -> Result<(), Error> {
     Ok(())
 }
 
+fn write_directory_listing(id: usize, items: Vec<String>) -> Result<(), Error> {
+    write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
+        remote_id: 0,
+        message: RpcResponse::DirectoryListing {
+            id,
+            items,
+        },
+    })?)?;
+    io::stdout().flush().unwrap();
+    Ok(())
+}
+
 pub struct BackendRemote {
     backend_id: usize,
     next_id: usize,
+    shutting_down: Arc<AtomicBool>,
+    handle: pr::Child,
     input: PipeWriter,
 }
 
 #[derive(Default)]
 pub struct Backend {
-    subbackends: Vec<BackendRemote>,
+    subbackends: HashMap<usize, BackendRemote>,
     jobs: HashMap<usize, mpsc::Sender<()>>,
 }
 
@@ -126,15 +150,11 @@ impl Backend {
 
                 self.jobs.insert(id, cancel_send);
 
-                eprintln!("a");
-
                 thread::spawn(move || {
                     cancel_recv.recv().unwrap();
 
                     handle.lock().unwrap().kill().unwrap();
                 });
-
-                eprintln!("b");
 
                 thread::spawn(move || {
                     loop {
@@ -157,7 +177,7 @@ impl Backend {
 
                     write_done(id, exit_code.into()).unwrap();
                 });
-                
+
                 Ok(())
             }
             Command::SetDirectory(dir) => {
@@ -184,8 +204,7 @@ impl Backend {
                 cmd.stdout(output_writer.into_stdio());
                 cmd.stdin(input_reader.into_stdio());
 
-                // eprintln!("spawn");
-                let _child = cmd.spawn()?;
+                let handle = cmd.spawn()?;
 
                 drop(cmd);
 
@@ -194,28 +213,37 @@ impl Backend {
                 let mut input = String::new();
                 output.read_line(&mut input)?;
                 assert_eq!(input, "nxQh6wsIiiFomXWE+7HQhQ==\n");
-                // eprintln!("done");
 
-                let id = self.subbackends.len() + 1;
+                let shutting_down = Arc::new(AtomicBool::new(false));
+                let shutting_down_clone = shutting_down.clone();
 
                 thread::spawn(move || {
                     loop {
                         let mut input = String::new();
                         match output.read_line(&mut input) {
-                            Ok(_) => {
-                                // eprintln!("read {}", input);
+                            Ok(n) => {
+                                if n == 0 {
+                                    break;
+                                }
+
                                 let mut rpc: Multiplex<RpcResponse> = serde_json::from_str(&input).unwrap();
                                 rpc.remote_id = id;
 
                                 write!(io::stdout(), "{}\n", serde_json::to_string(&rpc).unwrap()).unwrap();
                             }
-                            Err(error) => eprintln!("error: {}", error),
+                            Err(error) => {
+                                if !shutting_down_clone.load(Ordering::SeqCst) {
+                                    eprintln!("error: {}", error)
+                                }
+                            }
                         }
                     }
                 });
 
-                self.subbackends.push(BackendRemote {
+                self.subbackends.insert(id, BackendRemote {
                     backend_id: id,
+                    shutting_down,
+                    handle,
                     next_id: 0,
                     input: input_writer,
                 });
@@ -224,6 +252,13 @@ impl Backend {
             }
             _ => panic!(),
         }
+    }
+
+    fn end_remote(&mut self, id: usize) -> Result<(), Error> {
+        let mut backend = self.subbackends.remove(&id).unwrap();
+        backend.shutting_down.store(true, Ordering::SeqCst);
+        backend.handle.kill()?;
+        Ok(())
     }
 
     fn cancel(&mut self, id: usize) -> Result<(), Error> {
@@ -250,7 +285,7 @@ fn main() {
                 if n == 0 {
                     break;
                 }
-                eprintln!("part {}", input);
+                // eprintln!("part {}", input);
 
                 let rpc: Multiplex<RpcRequest> = serde_json::from_str(&input).unwrap();
 
@@ -262,9 +297,19 @@ fn main() {
                         RpcRequest::BeginRemote { id, command } => {
                             backend.begin_remote(id, command).unwrap();
                         }
+                        RpcRequest::EndRemote { id } => {
+                            backend.end_remote(id).unwrap();
+                        }
                         RpcRequest::CancelCommand { id } => {
-                            eprintln!("caught CtrlC");
+                            // eprintln!("caught CtrlC");
                             backend.cancel(id).unwrap();
+                        }
+                        RpcRequest::ListDirectory { id, path } => {
+                            let items = fs::read_dir(path).unwrap().map(|i| {
+                                i.unwrap().file_name().into_string().unwrap()
+                            }).collect();
+
+                            write_directory_listing(id, items).unwrap();
                         }
                     }
                 } else {
@@ -273,7 +318,7 @@ fn main() {
                         message: rpc.message,
                     }).unwrap();
                     // eprintln!("write {} {}", rpc.remote_id - 1, input);
-                    let pipe = &mut backend.subbackends[rpc.remote_id - 1].input;
+                    let pipe = &mut backend.subbackends.get_mut(&rpc.remote_id).unwrap().input;
                     write!(
                         pipe,
                         "{}\n",

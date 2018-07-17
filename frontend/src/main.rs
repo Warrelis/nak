@@ -17,11 +17,12 @@ use std::str;
 use std::io;
 use std::process as pr;
 use std::thread;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 
 use failure::Error;
 
 mod parse;
+mod edit;
 
 use parse::Parser;
 
@@ -56,6 +57,9 @@ pub enum RpcRequest {
     BeginRemote {
         id: usize,
         command: Command,
+    },
+    EndRemote {
+        id: usize,
     }
 }
 
@@ -151,7 +155,7 @@ impl BackendRemote {
         let stdout_pipe = self.next_id();
         let stderr_pipe = self.next_id();
         let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.len(),
+            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
             message: RpcRequest::BeginCommand {
                 id,
                 stdout_pipe,
@@ -173,7 +177,7 @@ impl BackendRemote {
         let id = self.next_id();
 
         let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.len(),
+            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
             message: RpcRequest::BeginRemote {
                 id,
                 command: c
@@ -187,19 +191,29 @@ impl BackendRemote {
         })
     }
 
+    fn end_remote(&mut self, remote: Remote) -> Result<(), Error> {
+        let serialized = serde_json::to_string(&Multiplex {
+            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
+            message: RpcRequest::EndRemote {
+                id: remote.id,
+            },
+        })?;
+
+        write!(self.input, "{}\n", serialized)?;
+
+        Ok(())
+    }
+
     fn cancel(&mut self, id: usize) -> Result<(), Error> {
 
         let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.len(),
+            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
             message: RpcRequest::CancelCommand { id },
         })?;
 
         eprintln!("caught CtrlC");
         write!(self.input, "{}\n", serialized)?;
-        eprintln!("1");
         self.input.flush()?;
-        eprintln!("2");
-
 
         Ok(())
     }
@@ -254,6 +268,14 @@ fn parse_command_simple(input: &str) -> Result<Shell, Error> {
     }))
 }
 
+struct SimpleCompleter;
+
+impl liner::Completer for SimpleCompleter {
+    fn completions(&self, _start: &str) -> Vec<String> {
+        vec![]
+    }
+}
+
 struct SimpleReader {
     ctx: liner::Context,
 }
@@ -261,7 +283,12 @@ struct SimpleReader {
 impl SimpleReader {
     fn new() -> SimpleReader {
         SimpleReader {
-            ctx: liner::Context::new(),
+            ctx: liner::Context {
+                history: liner::History::new(),
+                completer: Some(Box::new(SimpleCompleter)),
+                word_divider_fn: Box::new(liner::get_buffer_words),
+                key_bindings: liner::KeyBindings::Emacs,
+            }
         }
     }
 }
@@ -316,7 +343,9 @@ impl Exec {
 
                 match cmd {
                     Shell::Exit => {
-                        if self.remote.remotes.pop().is_none() {
+                        if let Some(remote) = self.remote.remotes.pop() {
+                            self.remote.end_remote(remote)?;
+                        } else {
                             return Ok(false)
                         }
                     }
@@ -336,7 +365,7 @@ impl Exec {
 
                 match msg {
                     Event::Remote(msg) => {
-                        assert_eq!(msg.remote_id, self.remote.remotes.len());
+                        assert_eq!(msg.remote_id, self.remote.remotes.last().map(|x| x.id).unwrap_or(0));
 
                         match msg.message {
                             RpcResponse::Pipe { id, data } => {
@@ -348,9 +377,9 @@ impl Exec {
                                     assert!(false, "{} {} {}", id, stdout_pipe, stderr_pipe);
                                 }
                             }
-                            RpcResponse::CommandDone { id, exit_code } => {
+                            RpcResponse::CommandDone { id, exit_code: _ } => {
                                 assert_eq!(id, id);
-                                println!("exit_code: {}", exit_code);
+                                // println!("exit_code: {}", exit_code);
                                 self.state = TermState::ReadingCommand;
                             }
                         }
