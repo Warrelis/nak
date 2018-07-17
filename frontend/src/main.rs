@@ -1,3 +1,4 @@
+
 #[macro_use]
 extern crate failure;
 #[macro_use]
@@ -20,7 +21,7 @@ use std::sync::mpsc;
 
 use failure::Error;
 
-use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process};
+use protocol::{Multiplex, RpcResponse, Command, Process};
 
 mod parse;
 mod edit;
@@ -30,10 +31,6 @@ mod comm;
 use prefs::Prefs;
 use comm::{BackendRemote, launch_backend};
 use edit::{Reader, SimpleReader};
-
-pub struct Remote {
-    id: usize,
-}
 
 pub enum Event {
     Remote(Multiplex<RpcResponse>),

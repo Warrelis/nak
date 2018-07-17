@@ -34,7 +34,7 @@ impl Prefs {
         }
     }
 
-    pub fn expand(&self, key: &str) -> Option<Command> {
-        self.aliases.get(key).cloned()
+    pub fn expand(&self, key: impl AsRef<str>) -> Option<Command> {
+        self.aliases.get(key.as_ref()).cloned()
     }
 }

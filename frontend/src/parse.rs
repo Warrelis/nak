@@ -1,9 +1,11 @@
+use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NodeType {
     Whitespace,
     Comment,
     Word,
+    Quote,
     Command,
     Sequence,
     If,
@@ -45,26 +47,34 @@ impl<'t, 'n> View<'t, 'n> {
     }
 }
 
+fn unquote<'a>(text: &'a str) -> Cow<'a, str> {
+    let bytes = text.as_bytes();
+    assert!(bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"');
+
+    text[1..text.len() - 1].into()
+}
+
 pub struct Command<'t, 'n>(View<'t, 'n>);
 
 impl<'t, 'n> Command<'t, 'n> {
-    pub fn head(&self) -> &'t str {
+    pub fn head(&self) -> Cow<'t, str> {
         for c in &self.0.node.children {
             match c.ty {
                 NodeType::Whitespace |
                 NodeType::Comment => continue,
-                NodeType::Word => return &self.0.text[c.begin..c.end],
+                NodeType::Word => return self.0.text[c.begin..c.end].into(),
+                NodeType::Quote => return unquote(&self.0.text[c.begin..c.end]),
                 _ => panic!(),
             }
         }
         panic!();
     }
 
-    pub fn body(&self) -> Vec<&'t str> {
+    pub fn body(&self) -> Vec<Cow<'t, str>> {
         self.0.node.children.iter()
             .filter(|c| c.ty != NodeType::Whitespace && c.ty != NodeType::Comment)
             .skip(1)
-            .map(|c| &self.0.text[c.begin..c.end])
+            .map(|c| self.0.text[c.begin..c.end].into())
             .collect()
     }
 }
@@ -117,6 +127,20 @@ impl Parser {
                     }
                     children.push(Node {
                         ty: NodeType::Word,
+                        begin,
+                        end: pos,
+                        children: vec![],
+                    })
+                }
+                b'"' => {
+                    let begin = pos;
+                    pos += 1;
+                    while pos < bytes.len() && bytes[pos] != b'"' {
+                        pos += 1;
+                    }
+                    pos += 1;
+                    children.push(Node {
+                        ty: NodeType::Quote,
                         begin,
                         end: pos,
                         children: vec![],
@@ -190,5 +214,16 @@ fn can_parse() {
                 NodeType::Whitespace,
                 NodeType::Word,
             ]);
+    }
+    {
+        let v = parser.parse(" \"test test2\"");
+        assert_eq!(v.0.node.ty, NodeType::Command);
+        assert_eq!(
+            v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
+            vec![
+                NodeType::Whitespace,
+                NodeType::Quote,
+            ]);
+        assert_eq!(v.head(), "test test2");
     }
 }

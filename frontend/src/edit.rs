@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use prefs::Prefs;
 use Shell;
 use protocol::Command;
@@ -21,7 +22,7 @@ pub trait Reader {
     fn save_history(&mut self);
 }
 
-fn check_single_arg(items: &[&str]) -> Result<String, Error> {
+fn check_single_arg<'a>(items: &[Cow<'a, str>]) -> Result<String, Error> {
     if items.len() == 1 {
         Ok(items[0].to_string())
     } else {
@@ -40,12 +41,12 @@ fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
 
     let head = cmd.head();
 
-    if let Some(mut new_cmd) = prefs.expand(head) {
+    if let Some(mut new_cmd) = prefs.expand(&head) {
         new_cmd.add_args(cmd.body().into_iter().map(String::from).collect());
         return Ok(Shell::Run(new_cmd));
     }
 
-    Ok(Shell::Run(match head {
+    Ok(Shell::Run(match head.as_ref() {
         "cd" => Command::SetDirectory(check_single_arg(&cmd.body())?),
         "nak" => {
             let mut it = cmd.body().into_iter();
@@ -105,7 +106,7 @@ impl Reader for SimpleReader {
 
         fn handle_keys<'a, T, W: Write, M: KeyMap<'a, W, T>>(
             mut keymap: M,
-            mut handler: &mut EventHandler<W>,
+            handler: &mut EventHandler<W>,
         ) -> io::Result<String>
         where
             String: From<M>,

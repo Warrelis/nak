@@ -53,7 +53,7 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Erro
         unsafe { libc::exit(0) };
     }
 
-    let mut endpoint = Endpoint::new(PipeTransport { input: input_writer });
+    let endpoint = Endpoint::new(PipeTransport { input: input_writer });
 
     let mut output = BufReader::new(output_reader);
 
@@ -85,6 +85,7 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Erro
         remotes: vec![root],
     })
 }
+
 impl BackendRemote {
     pub fn cur_remote(&self) -> RemoteId {
         *self.remotes.last().unwrap()
