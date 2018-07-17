@@ -289,7 +289,7 @@ fn run_backend() -> Result<(), Error> {
 
     env::set_var("NAK_SOCKET_PATH", socket_path);
     env::set_var("PAGER", "nak-backend pager");
-    env::set_var("EDITOR", "nak-backend editor");
+    env::set_var("EDITOR", format!("{} editor", env::current_exe()?.to_str().unwrap()));
 
     {
         let running_commands = backend.running_commands.clone();
