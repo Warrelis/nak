@@ -439,6 +439,7 @@ fn run_editor(path: &str) -> Result<(), Error> {
 
     let resp: EditResponse = serde_json::from_str(&response).unwrap();
 
+    handle.set_len(0).unwrap();
     handle.write_all(&resp.data).unwrap();
 
     Ok(())

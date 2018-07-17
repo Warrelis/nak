@@ -111,7 +111,7 @@ impl Exec {
                                 println!("editing {}", name);
                                 io::stdout().write(&data).unwrap();
 
-                                self.remote.finish_edit(command_id, edit_id, "Dummy editing working!".to_string().into_bytes()).unwrap();
+                                self.remote.finish_edit(command_id, edit_id, "Dummy editing working (without junk at the end)!".to_string().into_bytes()).unwrap();
                             }
                         }
                     }
