@@ -71,11 +71,27 @@ impl<'t, 'n> Command<'t, 'n> {
     }
 
     pub fn body(&self) -> Vec<Cow<'t, str>> {
-        self.0.node.children.iter()
-            .filter(|c| c.ty != NodeType::Whitespace && c.ty != NodeType::Comment)
-            .skip(1)
-            .map(|c| self.0.text[c.begin..c.end].into())
-            .collect()
+        let mut res = Vec::new();
+        {
+            let mut found = false;
+            let mut push = |it| {
+                if found {
+                    res.push(it);
+                } else {
+                    found = true;
+                }
+            };
+            for c in &self.0.node.children {
+                match c.ty {
+                    NodeType::Whitespace |
+                    NodeType::Comment => continue,
+                    NodeType::Word => push(self.0.text[c.begin..c.end].into()),
+                    NodeType::Quote => push(unquote(&self.0.text[c.begin..c.end])),
+                    _ => panic!(),
+                }
+            }
+        }
+        res
     }
 }
 
@@ -216,14 +232,17 @@ fn can_parse() {
             ]);
     }
     {
-        let v = parser.parse(" \"test test2\"");
+        let v = parser.parse(" \"test test2\" \"1 2 3\"");
         assert_eq!(v.0.node.ty, NodeType::Command);
         assert_eq!(
             v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
             vec![
                 NodeType::Whitespace,
                 NodeType::Quote,
+                NodeType::Whitespace,
+                NodeType::Quote,
             ]);
         assert_eq!(v.head(), "test test2");
+        assert_eq!(v.body(), vec!["1 2 3"]);
     }
 }
