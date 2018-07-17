@@ -13,13 +13,18 @@ extern crate serde_json;
 extern crate ctrlc;
 extern crate libc;
 extern crate termion;
+extern crate tempfile;
 extern crate protocol;
 
+use std::io::Read;
 use std::io::Write;
 use std::io;
 use std::sync::mpsc;
+use std::process as pr;
+use std::fs::File;
 
 use failure::Error;
+use tempfile::tempdir;
 
 use protocol::{Multiplex, RpcResponse, Command, Process};
 
@@ -111,7 +116,19 @@ impl Exec {
                                 println!("editing {}", name);
                                 io::stdout().write(&data).unwrap();
 
-                                self.remote.finish_edit(command_id, edit_id, "Dummy editing working (without junk at the end)!".to_string().into_bytes()).unwrap();
+                                let name = &name[name.rfind("/").map(|x| x+1).unwrap_or(0)..];
+
+                                let dir = tempdir()?;
+                                let path = dir.path().join(name);
+                                File::create(&path)?.write_all(&data)?;
+
+                                let res = pr::Command::new("micro").arg(path.to_str().unwrap()).status()?;
+                                assert!(res.success());
+
+                                let mut new_data = Vec::new();
+                                File::open(path)?.read_to_end(&mut new_data)?;
+
+                                self.remote.finish_edit(command_id, edit_id, new_data).unwrap();
                             }
                         }
                     }

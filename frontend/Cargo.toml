@@ -13,6 +13,7 @@ os_pipe = "0.6.1"
 serde = "*"
 serde_derive = "*"
 serde_json = "*"
+tempfile = "*"
 termion = "*"
 tokio = "0.1.7"
 
