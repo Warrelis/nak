@@ -9,6 +9,7 @@ extern crate base64;
 extern crate liner;
 extern crate serde;
 extern crate serde_json;
+extern crate ctrlc;
 
 use os_pipe::{PipeWriter, IntoStdio};
 use std::io::{Write, BufRead, BufReader};
@@ -16,7 +17,7 @@ use std::str;
 use std::io;
 use std::process as pr;
 use std::thread;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 
 use failure::Error;
 
@@ -49,6 +50,9 @@ pub enum RpcRequest {
         stderr_pipe: usize,
         command: Command,
     },
+    CancelCommand {
+        id: usize,
+    },
     BeginRemote {
         id: usize,
         command: Command,
@@ -67,7 +71,7 @@ pub enum RpcResponse {
     },
 }
 
-pub struct Response {
+pub struct Pipes {
     id: usize,
     stdout_pipe: usize,
     stderr_pipe: usize,
@@ -81,10 +85,14 @@ pub struct BackendRemote {
     next_id: usize,
     remotes: Vec<Remote>,
     input: PipeWriter,
-    output: mpsc::Receiver<Multiplex<RpcResponse>>,
 }
 
-fn launch_backend() -> Result<BackendRemote, Error> {
+enum Event {
+    Remote(Multiplex<RpcResponse>),
+    CtrlC,
+}
+
+fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Error> {
     let mut cmd = pr::Command::new("nak-backend");
 
     let (output_reader, output_writer) = os_pipe::pipe()?;
@@ -97,7 +105,6 @@ fn launch_backend() -> Result<BackendRemote, Error> {
 
     drop(cmd);
 
-    let (sender, receiver) = mpsc::channel();
     let mut output = BufReader::new(output_reader);
 
     let mut input = String::new();
@@ -108,10 +115,13 @@ fn launch_backend() -> Result<BackendRemote, Error> {
         loop {
             let mut input = String::new();
             match output.read_line(&mut input) {
-                Ok(_) => {
+                Ok(n) => {
+                    if n == 0 {
+                        continue;
+                    }
                     let rpc: Multiplex<RpcResponse> = serde_json::from_str(&input).unwrap();
 
-                    sender.send(rpc).unwrap();
+                    sender.send(Event::Remote(rpc)).unwrap();
                 }
                 Err(error) => eprintln!("error: {}", error),
             }
@@ -122,7 +132,6 @@ fn launch_backend() -> Result<BackendRemote, Error> {
         next_id: 0,
         remotes: Vec::new(),
         input: input_writer,
-        output: receiver,
     })
 }
 
@@ -137,7 +146,7 @@ impl BackendRemote {
         self.remotes.push(remote);
     }
 
-    fn run(&mut self, c: Command) -> Result<Response, Error> {
+    fn run(&mut self, c: Command) -> Result<Pipes, Error> {
         let id = self.next_id();
         let stdout_pipe = self.next_id();
         let stderr_pipe = self.next_id();
@@ -153,7 +162,7 @@ impl BackendRemote {
 
         write!(self.input, "{}\n", serialized)?;
 
-        Ok(Response {
+        Ok(Pipes {
             id,
             stdout_pipe,
             stderr_pipe,
@@ -164,7 +173,7 @@ impl BackendRemote {
         let id = self.next_id();
 
         let serialized = serde_json::to_string(&Multiplex {
-            remote_id: 0,
+            remote_id: self.remotes.len(),
             message: RpcRequest::BeginRemote {
                 id,
                 command: c
@@ -176,6 +185,23 @@ impl BackendRemote {
         Ok(Remote {
             id,
         })
+    }
+
+    fn cancel(&mut self, id: usize) -> Result<(), Error> {
+
+        let serialized = serde_json::to_string(&Multiplex {
+            remote_id: self.remotes.len(),
+            message: RpcRequest::CancelCommand { id },
+        })?;
+
+        eprintln!("caught CtrlC");
+        write!(self.input, "{}\n", serialized)?;
+        eprintln!("1");
+        self.input.flush()?;
+        eprintln!("2");
+
+
+        Ok(())
     }
 }
 
@@ -270,60 +296,100 @@ fn parse_simple() {
     )));
 }
 
-fn one_loop(remote: &mut BackendRemote, reader: &mut dyn Reader)
-    -> Result<bool, Error>
-{
-    match reader.get_command(remote)? {
-        Shell::Exit => {
-            if remote.remotes.pop().is_none() {
-                return Ok(false)
-            }
-        }
-        Shell::DoNothing => {}
-        Shell::BeginRemote(cmd) => {
-            let res = remote.begin_remote(cmd)?;
-            remote.push_remote(res);
-        }
-        Shell::Run(cmd) => {
-            let res = remote.run(cmd)?;
+enum TermState {
+    ReadingCommand,
+    WaitingOn(Pipes),
+}
 
-            loop {
-                let msg = remote.output.recv()?;
+struct Exec {
+    receiver: mpsc::Receiver<Event>,
+    remote: BackendRemote,
+    reader: Box<dyn Reader>,
+    state: TermState,
+}
 
-                assert_eq!(msg.remote_id, remote.remotes.len());
-                match msg.message {
-                    RpcResponse::Pipe { id, data } => {
-                        if id == res.stdout_pipe {
-                            io::stdout().write(&data)?;
-                        } else if id == res.stderr_pipe {
-                            io::stderr().write(&data)?;
-                        } else {
-                            assert!(false);
+impl Exec {
+    fn one_loop(&mut self) -> Result<bool, Error> {
+        match self.state {
+            TermState::ReadingCommand => {
+                let cmd = self.reader.get_command(&mut self.remote)?;
+
+                match cmd {
+                    Shell::Exit => {
+                        if self.remote.remotes.pop().is_none() {
+                            return Ok(false)
                         }
                     }
-                    RpcResponse::CommandDone { id, exit_code } => {
-                        assert_eq!(id, res.id);
-                        println!("exit_code: {}", exit_code);
-                        break;
+                    Shell::DoNothing => {}
+                    Shell::BeginRemote(cmd) => {
+                        let res = self.remote.begin_remote(cmd)?;
+                        self.remote.push_remote(res);
+                    }
+                    Shell::Run(cmd) => {
+                        let res = self.remote.run(cmd)?;
+                        self.state = TermState::WaitingOn(res);
+                    }
+                }
+            }
+            TermState::WaitingOn(Pipes { id, stdout_pipe, stderr_pipe }) => {
+                let msg = self.receiver.recv()?;
+
+                match msg {
+                    Event::Remote(msg) => {
+                        assert_eq!(msg.remote_id, self.remote.remotes.len());
+
+                        match msg.message {
+                            RpcResponse::Pipe { id, data } => {
+                                if id == stdout_pipe {
+                                    io::stdout().write(&data)?;
+                                } else if id == stderr_pipe {
+                                    io::stderr().write(&data)?;
+                                } else {
+                                    assert!(false, "{} {} {}", id, stdout_pipe, stderr_pipe);
+                                }
+                            }
+                            RpcResponse::CommandDone { id, exit_code } => {
+                                assert_eq!(id, id);
+                                println!("exit_code: {}", exit_code);
+                                self.state = TermState::ReadingCommand;
+                            }
+                        }
+                    }
+                    Event::CtrlC => {
+                        self.remote.cancel(id)?;
                     }
                 }
             }
         }
+        Ok(true)
     }
-    Ok(true)
 }
 
-fn remote_run(mut remote: BackendRemote, reader: &mut dyn Reader)
+fn remote_run(receiver: mpsc::Receiver<Event>, remote: BackendRemote, reader: Box<dyn Reader>)
     -> Result<(), Error>
 {
-    while one_loop(&mut remote, reader)? {}
+    let mut exec = Exec {
+        receiver,
+        remote,
+        reader,
+        state: TermState::ReadingCommand,
+    };
+
+    while exec.one_loop()? {}
     Ok(())
 }
 
 fn main() {
-    let mut reader = SimpleReader::new();
     // let remote = Box::new(SimpleRemote);
-    let remote = launch_backend().unwrap();
+    let (sender, receiver) = mpsc::channel();
 
-    remote_run(remote, &mut reader).unwrap();
+    let sender_clone = sender.clone();
+
+    ctrlc::set_handler(move || {
+        sender_clone.send(Event::CtrlC).unwrap();
+    }).expect("Error setting CtrlC handler");
+
+    let remote = launch_backend(sender).unwrap();
+
+    remote_run(receiver, remote, Box::new(SimpleReader::new())).unwrap();
 }

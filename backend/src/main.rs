@@ -4,16 +4,21 @@ extern crate serde;
 extern crate serde_json;
 extern crate failure;
 extern crate os_pipe;
+extern crate ctrlc;
 
-use os_pipe::PipeWriter;
+use std::collections::HashMap;
 use std::io::{Write, Read, BufRead, BufReader};
 use std::io;
 use std::env;
 use std::thread;
+use std::sync::mpsc;
+use std::sync::Mutex;
+use std::sync::Arc;
 
 use failure::Error;
 use std::process as pr;
 use os_pipe::IntoStdio;
+use os_pipe::PipeWriter;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Command {
@@ -39,6 +44,9 @@ pub enum RpcRequest {
         stdout_pipe: usize,
         stderr_pipe: usize,
         command: Command,
+    },
+    CancelCommand {
+        id: usize,
     },
     BeginRemote {
         id: usize,
@@ -91,6 +99,7 @@ pub struct BackendRemote {
 #[derive(Default)]
 pub struct Backend {
     subbackends: Vec<BackendRemote>,
+    jobs: HashMap<usize, mpsc::Sender<()>>,
 }
 
 impl Backend {
@@ -106,32 +115,50 @@ impl Backend {
                 cmd.stdout(output_writer.into_stdio());
                 cmd.stderr(error_writer.into_stdio());
 
-                let mut handle = cmd.spawn()?;
+                let handle = Arc::new(Mutex::new(cmd.spawn()?));
+                let cancel_handle = handle.clone();
 
                 drop(cmd);
 
                 let mut buf = [0u8; 1024];
 
-                loop {
-                    let len = output_reader.read(&mut buf)?;
-                    if len == 0 {
-                        break;
+                let (cancel_send, cancel_recv) = mpsc::channel();
+
+                self.jobs.insert(id, cancel_send);
+
+                eprintln!("a");
+
+                thread::spawn(move || {
+                    cancel_recv.recv().unwrap();
+
+                    handle.lock().unwrap().kill().unwrap();
+                });
+
+                eprintln!("b");
+
+                thread::spawn(move || {
+                    loop {
+                        let len = output_reader.read(&mut buf).unwrap();
+                        if len == 0 {
+                            break;
+                        }
+                        write_pipe(stdout_pipe, buf[..len].to_vec()).unwrap();
                     }
-                    write_pipe(stdout_pipe, buf[..len].to_vec())?;
-                }
 
-                loop {
-                    let len = error_reader.read(&mut buf)?;
-                    if len == 0 {
-                        break;
+                    loop {
+                        let len = error_reader.read(&mut buf).unwrap();
+                        if len == 0 {
+                            break;
+                        }
+                        write_pipe(stderr_pipe, buf[..len].to_vec()).unwrap();
                     }
-                    write_pipe(stderr_pipe, buf[..len].to_vec())?;
-                }
 
+                    let exit_code = cancel_handle.lock().unwrap().wait().unwrap().code().unwrap_or(-1);
 
-                let exit_code = handle.wait()?.code().unwrap_or(-1);
-
-                write_done(id, exit_code.into())
+                    write_done(id, exit_code.into()).unwrap();
+                });
+                
+                Ok(())
             }
             Command::SetDirectory(dir) => {
                 match env::set_current_dir(dir) {
@@ -198,10 +225,19 @@ impl Backend {
             _ => panic!(),
         }
     }
+
+    fn cancel(&mut self, id: usize) -> Result<(), Error> {
+        self.jobs.get(&id).unwrap().send(())?;
+        Ok(())
+    }
 }
 
 fn main() {
     let mut backend = Backend::default();
+
+    // ctrlc::set_handler(move || {
+    //     eprintln!("child caught CtrlC");
+    // }).expect("Error setting CtrlC handler");
 
     // eprintln!("spawn_self");
     write!(io::stdout(), "nxQh6wsIiiFomXWE+7HQhQ==\n").unwrap();
@@ -214,7 +250,7 @@ fn main() {
                 if n == 0 {
                     break;
                 }
-                // eprintln!("part {}", input);
+                eprintln!("part {}", input);
 
                 let rpc: Multiplex<RpcRequest> = serde_json::from_str(&input).unwrap();
 
@@ -225,6 +261,10 @@ fn main() {
                         }
                         RpcRequest::BeginRemote { id, command } => {
                             backend.begin_remote(id, command).unwrap();
+                        }
+                        RpcRequest::CancelCommand { id } => {
+                            eprintln!("caught CtrlC");
+                            backend.cancel(id).unwrap();
                         }
                     }
                 } else {
