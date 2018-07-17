@@ -144,21 +144,25 @@ impl Backend {
 
                 drop(cmd);
 
-                let mut buf = [0u8; 1024];
-
                 let (cancel_send, cancel_recv) = mpsc::channel();
 
                 self.jobs.insert(id, cancel_send);
 
                 thread::spawn(move || {
                     cancel_recv.recv().unwrap();
+                    eprintln!("{} received cancel", id);
 
-                    handle.lock().unwrap().kill().unwrap();
+                    // handle.lock().unwrap().kill().unwrap();
+
+                    eprintln!("{} finished cancel", id);
                 });
 
                 thread::spawn(move || {
+                    let mut buf = [0u8; 1024];
+
                     loop {
                         let len = output_reader.read(&mut buf).unwrap();
+                        eprintln!("{} read stdout {:?}", id, len);
                         if len == 0 {
                             break;
                         }
@@ -167,6 +171,7 @@ impl Backend {
 
                     loop {
                         let len = error_reader.read(&mut buf).unwrap();
+                        eprintln!("{} read stderr {:?}", id, len);
                         if len == 0 {
                             break;
                         }
@@ -174,6 +179,7 @@ impl Backend {
                     }
 
                     let exit_code = cancel_handle.lock().unwrap().wait().unwrap().code().unwrap_or(-1);
+                    eprintln!("{} exit {}", id, exit_code);
 
                     write_done(id, exit_code.into()).unwrap();
                 });
@@ -270,9 +276,9 @@ impl Backend {
 fn main() {
     let mut backend = Backend::default();
 
-    // ctrlc::set_handler(move || {
-    //     eprintln!("child caught CtrlC");
-    // }).expect("Error setting CtrlC handler");
+    ctrlc::set_handler(move || {
+        eprintln!("backend caught CtrlC");
+    }).expect("Error setting CtrlC handler");
 
     // eprintln!("spawn_self");
     write!(io::stdout(), "nxQh6wsIiiFomXWE+7HQhQ==\n").unwrap();

@@ -10,11 +10,12 @@ extern crate liner;
 extern crate serde;
 extern crate serde_json;
 extern crate ctrlc;
+extern crate libc;
 
 use os_pipe::{PipeWriter, IntoStdio};
 use std::io::{Write, BufRead, BufReader};
 use std::str;
-use std::io;
+use std::{io, fs};
 use std::process as pr;
 use std::thread;
 use std::sync::mpsc;
@@ -97,17 +98,24 @@ enum Event {
 }
 
 fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Error> {
-    let mut cmd = pr::Command::new("nak-backend");
 
     let (output_reader, output_writer) = os_pipe::pipe()?;
     let (input_reader, input_writer) = os_pipe::pipe()?;
 
-    cmd.stdout(output_writer.into_stdio());
-    cmd.stdin(input_reader.into_stdio());
+    let pid = unsafe { libc::fork() };
 
-    let _child = cmd.spawn()?;
+    if pid == 0 {
+        let mut cmd = pr::Command::new("nak-backend");
 
-    drop(cmd);
+        cmd.stdout(output_writer.into_stdio());
+        cmd.stderr(fs::OpenOptions::new().create(true).append(true).open("/tmp/nak.log")?);
+        cmd.stdin(input_reader.into_stdio());
+
+        let _child = cmd.spawn()?;
+
+        drop(cmd);
+        unsafe { libc::exit(0) };
+    }
 
     let mut output = BufReader::new(output_reader);
 
