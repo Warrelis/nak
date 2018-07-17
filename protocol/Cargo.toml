@@ -7,3 +7,4 @@ authors = ["Joshua Warner <joshw@dropbox.com>"]
 serde = "*"
 serde_derive = "*"
 serde_json = "*"
+failure = "0.1.1"

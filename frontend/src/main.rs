@@ -20,8 +20,7 @@ use std::sync::mpsc;
 
 use failure::Error;
 
-use protocol::{Multiplex, RpcResponse, RpcRequest, Command};
-
+use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process};
 
 mod parse;
 mod edit;
@@ -31,12 +30,6 @@ mod comm;
 use prefs::Prefs;
 use comm::{BackendRemote, launch_backend};
 use edit::{Reader, SimpleReader};
-
-pub struct Pipes {
-    id: usize,
-    stdout_pipe: usize,
-    stderr_pipe: usize,
-}
 
 pub struct Remote {
     id: usize,
@@ -57,7 +50,7 @@ pub enum Shell {
 
 enum TermState {
     ReadingCommand,
-    WaitingOn(Pipes),
+    WaitingOn(Process),
 }
 
 struct Exec {
@@ -75,16 +68,15 @@ impl Exec {
 
                 match cmd {
                     Shell::Exit => {
-                        if let Some(remote) = self.remote.remotes.pop() {
-                            self.remote.end_remote(remote)?;
+                        if self.remote.remotes.len() > 1 {
+                            self.remote.end_remote()?;
                         } else {
                             return Ok(false)
                         }
                     }
                     Shell::DoNothing => {}
                     Shell::BeginRemote(cmd) => {
-                        let res = self.remote.begin_remote(cmd)?;
-                        self.remote.push_remote(res);
+                        self.remote.begin_remote(cmd)?;
                     }
                     Shell::Run(cmd) => {
                         let res = self.remote.run(cmd)?;
@@ -92,12 +84,12 @@ impl Exec {
                     }
                 }
             }
-            TermState::WaitingOn(Pipes { id, stdout_pipe, stderr_pipe }) => {
+            TermState::WaitingOn(Process { id, stdout_pipe, stderr_pipe }) => {
                 let msg = self.receiver.recv()?;
 
                 match msg {
                     Event::Remote(msg) => {
-                        assert_eq!(msg.remote_id, self.remote.remotes.last().map(|x| x.id).unwrap_or(0));
+                        // assert_eq!(msg.remote_id, self.remote.remotes.last().map(|x| x.id).unwrap_or(0));
 
                         match msg.message {
                             RpcResponse::Pipe { id, data } => {

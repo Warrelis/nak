@@ -20,7 +20,7 @@ use std::process as pr;
 use os_pipe::IntoStdio;
 use os_pipe::PipeWriter;
 
-use protocol::{Multiplex, RpcResponse, RpcRequest, Command};
+use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process};
 
 fn write_pipe(id: usize, data: Vec<u8>) -> Result<(), Error> {
     write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
@@ -243,7 +243,7 @@ fn main() {
 
                 if rpc.remote_id == 0 {
                     match rpc.message {
-                        RpcRequest::BeginCommand { id, stdout_pipe, stderr_pipe, command } => {
+                        RpcRequest::BeginCommand { process: Process { id, stdout_pipe, stderr_pipe } , command } => {
                             backend.run(id, stdout_pipe, stderr_pipe, command).unwrap();
                         }
                         RpcRequest::BeginRemote { id, command } => {

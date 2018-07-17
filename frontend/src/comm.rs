@@ -11,12 +11,26 @@ use os_pipe;
 use libc;
 use serde_json;
 
-use { RpcResponse, RpcRequest, Pipes, Remote, Event, Multiplex, Command };
+use protocol::{ RpcResponse, Process, Multiplex, Command, Transport, Endpoint, RemoteId };
+
+use Event;
+
+struct PipeTransport {
+    input: PipeWriter,
+}
+
+impl Transport for PipeTransport {
+    fn send(&mut self, data: &[u8]) -> Result<(), Error> {
+        self.input.write(data)?;
+        self.input.flush()?;
+        Ok(())
+    }
+
+}
 
 pub struct BackendRemote {
-    next_id: usize,
-    pub remotes: Vec<Remote>,
-    input: PipeWriter,
+    endpoint: Endpoint<PipeTransport>,
+    pub remotes: Vec<RemoteId>,
 }
 
 pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Error> {
@@ -38,6 +52,8 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Erro
         drop(cmd);
         unsafe { libc::exit(0) };
     }
+
+    let mut endpoint = Endpoint::new(PipeTransport { input: input_writer });
 
     let mut output = BufReader::new(output_reader);
 
@@ -62,88 +78,36 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Erro
         }
     });
 
+    let root = endpoint.root();
+
     Ok(BackendRemote {
-        next_id: 0,
-        remotes: Vec::new(),
-        input: input_writer,
+        endpoint,
+        remotes: vec![root],
     })
 }
 impl BackendRemote {
-    fn next_id(&mut self) -> usize {
-        let res = self.next_id;
-        self.next_id += 1;
-        res
+    pub fn cur_remote(&self) -> RemoteId {
+        *self.remotes.last().unwrap()
     }
 
-    pub fn push_remote(&mut self, remote: Remote) {
+    pub fn run(&mut self, c: Command) -> Result<Process, Error> {
+        let cur_remote = self.cur_remote();
+        Ok(self.endpoint.command(cur_remote, c)?)
+    }
+
+    pub fn begin_remote(&mut self, c: Command) -> Result<RemoteId, Error> {
+        let cur_remote = self.cur_remote();
+        let remote = self.endpoint.remote(cur_remote, c)?;
         self.remotes.push(remote);
+        Ok(remote)
     }
 
-    pub fn run(&mut self, c: Command) -> Result<Pipes, Error> {
-        let id = self.next_id();
-        let stdout_pipe = self.next_id();
-        let stderr_pipe = self.next_id();
-        let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
-            message: RpcRequest::BeginCommand {
-                id,
-                stdout_pipe,
-                stderr_pipe,
-                command: c
-            },
-        })?;
-
-        write!(self.input, "{}\n", serialized)?;
-
-        Ok(Pipes {
-            id,
-            stdout_pipe,
-            stderr_pipe,
-        })
-    }
-
-    pub fn begin_remote(&mut self, c: Command) -> Result<Remote, Error> {
-        let id = self.next_id();
-
-        let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
-            message: RpcRequest::BeginRemote {
-                id,
-                command: c
-            },
-        })?;
-
-        write!(self.input, "{}\n", serialized)?;
-
-        Ok(Remote {
-            id,
-        })
-    }
-
-    pub fn end_remote(&mut self, remote: Remote) -> Result<(), Error> {
-        let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
-            message: RpcRequest::EndRemote {
-                id: remote.id,
-            },
-        })?;
-
-        write!(self.input, "{}\n", serialized)?;
-
-        Ok(())
+    pub fn end_remote(&mut self) -> Result<(), Error> {
+        let cur_remote = self.remotes.pop().unwrap();
+        Ok(self.endpoint.close_remote(cur_remote)?)
     }
 
     pub fn cancel(&mut self, id: usize) -> Result<(), Error> {
-
-        let serialized = serde_json::to_string(&Multiplex {
-            remote_id: self.remotes.last().map(|r| r.id).unwrap_or(0),
-            message: RpcRequest::CancelCommand { id },
-        })?;
-
-        eprintln!("caught CtrlC");
-        write!(self.input, "{}\n", serialized)?;
-        self.input.flush()?;
-
-        Ok(())
+        Ok(self.endpoint.close_process(id)?)
     }
 }
