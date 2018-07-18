@@ -12,6 +12,7 @@ use failure::Error;
 pub enum Command {
     Unknown(String, Vec<String>),
     SetDirectory(String),
+    Edit(String),
 }
 
 impl Command {
@@ -20,7 +21,8 @@ impl Command {
             &mut Command::Unknown(_, ref mut args) => {
                 args.extend(new_args)
             }
-            &mut Command::SetDirectory(_) => panic!(), 
+            &mut Command::SetDirectory(_) |
+            &mut Command::Edit(_) => panic!(),
         }
     }
 }

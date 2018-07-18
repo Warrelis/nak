@@ -189,6 +189,35 @@ impl Backend {
                     }
                 }
             }
+            Command::Edit(path) => {
+                let (sender, receiver) = mpsc::channel();
+
+                self.waiting_edits.lock().unwrap().insert(0, sender);
+
+                let mut contents = Vec::new();
+                match File::open(&path) {
+                    Ok(mut f) => {
+                        f.read_to_end(&mut contents)?;
+                    }
+                    Err(e) => {
+                        if e.kind() != io::ErrorKind::NotFound {
+                            return Err(e.into());
+                        }
+                    }
+                }
+
+                write_edit_file_request(id, 0, path.clone(), contents).unwrap();
+
+                thread::spawn(move || {
+                    let resp = receiver.recv().unwrap();
+
+                    File::create(path).unwrap().write_all(&resp).unwrap();
+
+                    write_done(id, 0).unwrap();
+                });
+
+                Ok(())
+            }
         }
     }
 

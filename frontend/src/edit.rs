@@ -48,6 +48,7 @@ fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
 
     Ok(Shell::Run(match head.as_ref() {
         "cd" => Command::SetDirectory(check_single_arg(&cmd.body())?),
+        "micro" => Command::Edit(check_single_arg(&cmd.body())?), // TODO: make this a configurable alias instead
         "nak" => {
             let mut it = cmd.body().into_iter();
             let head = it.next().unwrap().to_string();
