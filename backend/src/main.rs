@@ -485,7 +485,6 @@ fn run_editor(path: &str) -> Result<(), Error> {
 
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
-    eprintln!("got {:?}", response);
 
     let resp: EditResponse = serde_json::from_str(&response).unwrap();
 
