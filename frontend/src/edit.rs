@@ -22,9 +22,9 @@ pub trait Reader {
     fn save_history(&mut self);
 }
 
-fn check_single_arg<'a>(items: &[Cow<'a, str>]) -> Result<String, Error> {
+fn check_single_arg<'a>(items: &[String]) -> Result<String, Error> {
     if items.len() == 1 {
-        Ok(items[0].to_string())
+        Ok(items[0].clone())
     } else {
         Err(format_err!("Bad argument length: {}", items.len()))
     }
@@ -39,31 +39,32 @@ fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
 
     let cmd = p.parse(input);
 
-    let head = cmd.head();
+    let mut parts = vec![cmd.head().to_string()];
+    parts.extend(cmd.body().into_iter().map(|e| e.to_string()));
 
-    if let Some(mut new_cmd) = prefs.expand(&head) {
-        new_cmd.add_args(cmd.body().into_iter().map(String::from).collect());
-        return Ok(Shell::Run { cmd: new_cmd, redirect: None });
-    }
+    parts = prefs.expand(parts);
 
     let redirect = cmd.redirect().map(|r| r.file().to_string());
 
+    let head = &parts[0];
+    let body = &parts[1..];
+
     Ok(Shell::Run {
-        cmd: match head.as_ref() {
-            "cd" => Command::SetDirectory(check_single_arg(&cmd.body())?),
-            "micro" => Command::Edit(check_single_arg(&cmd.body())?), // TODO: make this a configurable alias instead
+        cmd: match head.as_str() {
+            "cd" => Command::SetDirectory(check_single_arg(body)?),
+            "micro" => Command::Edit(check_single_arg(body)?), // TODO: make this a configurable alias instead
             "nak" => {
-                let mut it = cmd.body().into_iter();
+                let mut it = body.into_iter();
                 let head = it.next().unwrap().to_string();
 
                 return Ok(Shell::BeginRemote(Command::Unknown(
                     head,
-                    it.map(String::from).collect(),
+                    it.map(|i| i.to_string()).collect(),
                 )));
             }
             _ => Command::Unknown(
                 head.to_string(),
-                cmd.body().into_iter().map(String::from).collect(),
+                body.into_iter().map(|i| i.to_string()).collect(),
             )
         },
         redirect,
@@ -148,7 +149,10 @@ impl Reader for SimpleReader {
 
         let parsed = parse_command_simple(&self.prefs, &res)?;
 
-        self.ctx.history.push(Buffer::from(res))?;
+        match &parsed {
+            Shell::DoNothing => {}
+            _ => self.ctx.history.push(Buffer::from(res))?,
+        }
 
         Ok(parsed)
     }

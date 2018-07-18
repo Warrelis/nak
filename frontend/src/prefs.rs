@@ -9,9 +9,22 @@ use serde_json;
 
 use Command;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Item {
+    Literal(String),
+    Variable(usize),
+    Expando(usize),
+}
+
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+pub struct Rule {
+    find: Vec<Item>,
+    replace: Vec<Item>,
+}
+
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct Prefs {
-    aliases: HashMap<String, Command>,
+    aliases: Vec<Rule>,
 }
 
 impl Prefs {
@@ -34,7 +47,65 @@ impl Prefs {
         }
     }
 
-    pub fn expand(&self, key: impl AsRef<str>) -> Option<Command> {
-        self.aliases.get(key.as_ref()).cloned()
+    pub fn expand(&self, cmd: Vec<String>) -> Vec<String> {
+
+        'outer: for rule in &self.aliases {
+            let mut var_matches = HashMap::new();
+            let mut expando_matches = HashMap::new();
+
+            let mut it = cmd.iter();
+            let mut next = it.next();
+
+            for item in &rule.find {
+                match item {
+                    Item::Literal(word) => {
+                        if next == Some(word) {
+                            next = it.next();
+                        } else {
+                            continue 'outer;
+                        }
+                    }
+                    Item::Variable(id) => {
+                        assert!(!var_matches.contains_key(id));
+                        assert!(!expando_matches.contains_key(id));
+
+                        if let Some(word) = next {
+                            var_matches.insert(id, word.clone());
+
+                            next = it.next();
+                        } else {
+                            continue 'outer;
+                        }
+                    }
+                    Item::Expando(id) => {
+                        assert!(!var_matches.contains_key(id));
+                        assert!(!expando_matches.contains_key(id));
+
+                        let mut words = Vec::new();
+                        if let Some(next) = next {
+                            words.push(next.clone());
+                            for i in &mut it {
+                                words.push(i.clone());
+                            }
+                        }
+                        expando_matches.insert(id, words);
+                    }
+                }
+            }
+
+            // Successfully matched, now construct the output!
+            let mut res = Vec::new();
+            for item in &rule.replace {
+                match item {
+                    Item::Literal(word) => res.push(word.clone()),
+                    Item::Variable(id) => res.push(var_matches.remove(id).unwrap()),
+                    Item::Expando(id) => res.extend(expando_matches.remove(id).unwrap()),
+                }
+            }
+
+            return res;
+        }
+
+        cmd
     }
 }
