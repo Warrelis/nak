@@ -2,6 +2,7 @@
 import sys
 import subprocess
 import base64
+from threading import Thread
 
 vm = sys.argv[1]
 args = sys.argv[2:]
@@ -36,25 +37,23 @@ def pages(block):
 
 # config['LogLevel'] = 'DEBUG'
 
-ssh_command = flatten(['ssh'] + [['-o', k + '=' + v] for k, v in config.items()] + [config['HostName'], 'sh'])
-
-ssh = subprocess.Popen(ssh_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-
 with open("/Users/joshw/src/github.com/joshuawarner32/nak/bin/linux/backend", 'rb') as f:
     file = f.read()
 
-print(len(file))
+def do(cmd, file):
+    ssh_command = flatten(['ssh'] + [['-o', k + '=' + v] for k, v in config.items()] + [config['HostName']] + cmd)
+    proc = subprocess.Popen(ssh_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    proc.stdin.write(file)
+    outs, errs = proc.communicate()
+    assert errs is None
+    return outs
 
-ssh.stdin.write("truncate 0 nak-backend\n".encode('utf-8'))
-print("a")
+do(['sh', '-c', 'cat > nak-backend'], file)
+assert b'6981b4c374ca5df30b9bdc00837ff14dcfc2901b  nak-backend\n' == do(['sha1sum nak-backend'], b'')
+do(['chmod', '+x', 'nak-backend'], b'')
+do(['chmod', '+x', 'nak-backend'], b'')
 
-for page in pages(file):
-    print("loop")
-    ssh.stdin.write(("echo " + base64.b64encode(page).decode('utf-8') + " | base64 -d > nak-backend\n").encode('utf-8'))
 
-print("b")
-ssh.stdin.write("sha1sum nak-backend\n".encode('utf-8'))
-
-print("c")
-while True:
-    print("line", ssh.stdout.readline())
+ssh_command = flatten(['ssh'] + [['-o', k + '=' + v] for k, v in config.items()] + [config['HostName'], './nak-backend'])
+proc = subprocess.Popen(ssh_command)
+proc.wait()
