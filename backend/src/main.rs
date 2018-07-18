@@ -268,7 +268,7 @@ impl Backend {
 fn random_key() -> String {
     let mut bytes = [0u8; 16];
     thread_rng().fill(&mut bytes);
-    base64::encode(&bytes)
+    base64::encode_config(&bytes, base64::URL_SAFE)
 }
 
 fn run_backend() -> Result<(), Error> {
@@ -285,11 +285,13 @@ fn run_backend() -> Result<(), Error> {
 
     let socket_path = format!("/tmp/nak-backend-{}", random_key());
 
-    let listener = UnixListener::bind(&socket_path).unwrap();
+    eprintln!("socket_path: {:?}", socket_path);
+
+    let listener = UnixListener::bind(&socket_path).expect("bind listen socket");
 
     env::set_var("NAK_SOCKET_PATH", socket_path);
     env::set_var("PAGER", "nak-backend pager");
-    env::set_var("EDITOR", format!("{} editor", env::current_exe()?.to_str().unwrap()));
+    env::set_var("EDITOR", format!("{} editor", env::current_exe()?.to_str().expect("current exe")));
 
     {
         let running_commands = backend.running_commands.clone();
