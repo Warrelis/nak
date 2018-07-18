@@ -113,6 +113,7 @@ pub struct Backend {
 
 impl Backend {
     fn run(&mut self, id: usize, stdout_pipe: usize, stderr_pipe: usize, c: Command) -> Result<(), Error> {
+        eprintln!("{} running {:?}", id, c);
         match c {
             Command::Unknown(path, args) => {
                 let mut cmd = pr::Command::new(path);
