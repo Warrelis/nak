@@ -91,9 +91,16 @@ impl BackendRemote {
         *self.remotes.last().unwrap()
     }
 
-    pub fn run(&mut self, c: Command) -> Result<Process, Error> {
+    pub fn run(&mut self, c: Command, redirect: Option<String>) -> Result<Process, Error> {
         let cur_remote = self.cur_remote();
-        Ok(self.endpoint.command(cur_remote, c)?)
+
+        if let Some(redirect) = redirect {
+            let handle = self.endpoint.open_file(cur_remote, redirect)?;
+            Ok(self.endpoint.command(cur_remote, c, Some(handle))?)
+
+        } else {
+            Ok(self.endpoint.command(cur_remote, c, None)?)
+        }
     }
 
     pub fn begin_remote(&mut self, c: Command) -> Result<RemoteId, Error> {

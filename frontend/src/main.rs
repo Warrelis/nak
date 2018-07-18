@@ -46,7 +46,10 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Shell {
     DoNothing,
-    Run(Command),
+    Run {
+        cmd: Command,
+        redirect: Option<String>,
+    },
     BeginRemote(Command),
     Exit,
 }
@@ -81,8 +84,8 @@ impl Exec {
                     Shell::BeginRemote(cmd) => {
                         self.remote.begin_remote(cmd)?;
                     }
-                    Shell::Run(cmd) => {
-                        let res = self.remote.run(cmd)?;
+                    Shell::Run { cmd, redirect } => {
+                        let res = self.remote.run(cmd, redirect)?;
                         self.state = TermState::WaitingOn(res);
                     }
                 }

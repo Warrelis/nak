@@ -53,6 +53,10 @@ pub enum RpcRequest {
         id: usize,
         command: Command,
     },
+    OpenFile {
+        id: usize,
+        path: String,
+    },
     EndRemote {
         id: usize,
     },
@@ -90,6 +94,9 @@ pub enum RpcResponse {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct RemoteId(usize);
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct Handle(usize);
 
 #[derive(Clone)]
 struct RemoteState {
@@ -145,7 +152,7 @@ impl<T: Transport> Endpoint<T> {
     }
 
     pub fn root(&self) -> RemoteId {
-        RemoteId(0)
+       RemoteId(0)
     }
 
     pub fn remote(&mut self, remote: RemoteId, command: Command) -> Result<RemoteId, Error> {
@@ -167,11 +174,11 @@ impl<T: Transport> Endpoint<T> {
         Ok(RemoteId(id))
     }
 
-    pub fn command(&mut self, remote: RemoteId, command: Command) -> Result<Process, Error> {
+    pub fn command(&mut self, remote: RemoteId, command: Command, redirect: Option<Handle>) -> Result<Process, Error> {
         assert!(self.remotes.contains_key(&remote));
 
         let id = self.ids.next_id();
-        let stdout_pipe = self.ids.next_id();
+        let stdout_pipe = redirect.map(|h| h.0).unwrap_or_else(|| self.ids.next_id());
         let stderr_pipe = self.ids.next_id();
 
         let process = Process {
@@ -180,7 +187,7 @@ impl<T: Transport> Endpoint<T> {
             stderr_pipe,
         };
 
-        self.trans.send(&ser_to_endpoint(remote,  RpcRequest::BeginCommand {
+        self.trans.send(&ser_to_endpoint(remote, RpcRequest::BeginCommand {
             process,
             command,
         }))?;
@@ -190,12 +197,25 @@ impl<T: Transport> Endpoint<T> {
         Ok(process)
     }
 
+    pub fn open_file(&mut self, remote: RemoteId, path: String) -> Result<Handle, Error> {
+        assert!(self.remotes.contains_key(&remote));
+
+        let id = self.ids.next_id();
+
+        self.trans.send(&ser_to_endpoint(remote, RpcRequest::OpenFile {
+            id,
+            path,
+        }))?;
+
+        Ok(Handle(id))
+    }
+
     pub fn close_remote(&mut self, remote: RemoteId) -> Result<(), Error> {
         let state = self.remotes.remove(&remote).expect("remote not connected");
 
         // TODO: close jobs?
 
-        self.trans.send(&ser_to_endpoint(state.parent.expect("closing root remote"),  RpcRequest::EndRemote {
+        self.trans.send(&ser_to_endpoint(state.parent.expect("closing root remote"), RpcRequest::EndRemote {
             id: remote.0,
         }))?;
 
@@ -207,7 +227,7 @@ impl<T: Transport> Endpoint<T> {
 
         assert!(self.remotes.contains_key(&process_state.parent));
 
-        self.trans.send(&ser_to_endpoint(process_state.parent,  RpcRequest::CancelCommand {
+        self.trans.send(&ser_to_endpoint(process_state.parent, RpcRequest::CancelCommand {
             id,
         }))?;
 
@@ -219,7 +239,7 @@ impl<T: Transport> Endpoint<T> {
 
         assert!(self.remotes.contains_key(&process_state.parent));
 
-        self.trans.send(&ser_to_endpoint(process_state.parent,  RpcRequest::FinishEdit {
+        self.trans.send(&ser_to_endpoint(process_state.parent, RpcRequest::FinishEdit {
             id: edit_id,
             data,
         }))?;

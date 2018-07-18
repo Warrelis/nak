@@ -108,6 +108,7 @@ pub struct Backend {
     waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>,
     subbackends: HashMap<usize, BackendRemote>,
     jobs: HashMap<usize, mpsc::Sender<()>>,
+    open_files: HashMap<usize, File>,
 }
 
 impl Backend {
@@ -124,11 +125,19 @@ impl Backend {
                     id,
                 });
 
-                let (mut output_reader, output_writer) = os_pipe::pipe()?;
                 let (mut error_reader, error_writer) = os_pipe::pipe()?;
-
-                cmd.stdout(output_writer.into_stdio());
                 cmd.stderr(error_writer.into_stdio());
+
+
+                let (mut output_reader, output_writer) = os_pipe::pipe()?;
+                
+                let mut do_forward = true;
+                if let Some(handle) = self.open_files.remove(&stdout_pipe) {
+                    cmd.stdout(handle);
+                    do_forward = false;
+                } else {
+                    cmd.stdout(output_writer.into_stdio());
+                }
 
                 let handle = Arc::new(Mutex::new(cmd.spawn()?));
                 let cancel_handle = handle.clone();
@@ -152,13 +161,15 @@ impl Backend {
                 thread::spawn(move || {
                     let mut buf = [0u8; 1024];
 
-                    loop {
-                        let len = output_reader.read(&mut buf).unwrap();
-                        eprintln!("{} read stdout {:?}", id, len);
-                        if len == 0 {
-                            break;
+                    if do_forward {
+                        loop {
+                            let len = output_reader.read(&mut buf).unwrap();
+                            eprintln!("{} read stdout {:?}", id, len);
+                            if len == 0 {
+                                break;
+                            }
+                            write_pipe(stdout_pipe, buf[..len].to_vec()).unwrap();
                         }
-                        write_pipe(stdout_pipe, buf[..len].to_vec()).unwrap();
                     }
 
                     loop {
@@ -292,6 +303,11 @@ impl Backend {
         self.jobs.get(&id).unwrap().send(())?;
         Ok(())
     }
+
+    fn open_file(&mut self, id: usize, path: String) -> Result<(), Error> {
+        self.open_files.insert(id, File::create(path)?);
+        Ok(())
+    }
 }
 
 fn random_key() -> String {
@@ -382,32 +398,35 @@ fn run_backend() -> Result<(), Error> {
                 }
                 // eprintln!("part {}", input);
 
-                let rpc: Multiplex<RpcRequest> = serde_json::from_str(&input).unwrap();
+                let rpc: Multiplex<RpcRequest> = serde_json::from_str(&input)?;
 
                 if rpc.remote_id == 0 {
                     match rpc.message {
                         RpcRequest::BeginCommand { process: Process { id, stdout_pipe, stderr_pipe } , command } => {
-                            backend.run(id, stdout_pipe, stderr_pipe, command).unwrap();
+                            backend.run(id, stdout_pipe, stderr_pipe, command)?;
                         }
                         RpcRequest::BeginRemote { id, command } => {
-                            backend.begin_remote(id, command).unwrap();
+                            backend.begin_remote(id, command)?;
+                        }
+                        RpcRequest::OpenFile { id, path } => {
+                            backend.open_file(id, path)?;
                         }
                         RpcRequest::EndRemote { id } => {
-                            backend.end_remote(id).unwrap();
+                            backend.end_remote(id)?;
                         }
                         RpcRequest::CancelCommand { id } => {
                             // eprintln!("caught CtrlC");
-                            backend.cancel(id).unwrap();
+                            backend.cancel(id)?;
                         }
                         RpcRequest::ListDirectory { id, path } => {
                             let items = fs::read_dir(path).unwrap().map(|i| {
                                 i.unwrap().file_name().into_string().unwrap()
                             }).collect();
 
-                            write_directory_listing(id, items).unwrap();
+                            write_directory_listing(id, items)?;
                         }
                         RpcRequest::FinishEdit { id, data } => {
-                            backend.waiting_edits.lock().unwrap().remove(&id).unwrap().send(data).unwrap();
+                            backend.waiting_edits.lock().unwrap().remove(&id).unwrap().send(data)?;
                         }
                     }
                 } else {

@@ -43,26 +43,31 @@ fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
 
     if let Some(mut new_cmd) = prefs.expand(&head) {
         new_cmd.add_args(cmd.body().into_iter().map(String::from).collect());
-        return Ok(Shell::Run(new_cmd));
+        return Ok(Shell::Run { cmd: new_cmd, redirect: None });
     }
 
-    Ok(Shell::Run(match head.as_ref() {
-        "cd" => Command::SetDirectory(check_single_arg(&cmd.body())?),
-        "micro" => Command::Edit(check_single_arg(&cmd.body())?), // TODO: make this a configurable alias instead
-        "nak" => {
-            let mut it = cmd.body().into_iter();
-            let head = it.next().unwrap().to_string();
+    let redirect = cmd.redirect().map(|r| r.file().to_string());
 
-            return Ok(Shell::BeginRemote(Command::Unknown(
-                head,
-                it.map(String::from).collect(),
-            )));
-        }
-        _ => Command::Unknown(
-            head.to_string(),
-            cmd.body().into_iter().map(String::from).collect(),
-        )
-    }))
+    Ok(Shell::Run {
+        cmd: match head.as_ref() {
+            "cd" => Command::SetDirectory(check_single_arg(&cmd.body())?),
+            "micro" => Command::Edit(check_single_arg(&cmd.body())?), // TODO: make this a configurable alias instead
+            "nak" => {
+                let mut it = cmd.body().into_iter();
+                let head = it.next().unwrap().to_string();
+
+                return Ok(Shell::BeginRemote(Command::Unknown(
+                    head,
+                    it.map(String::from).collect(),
+                )));
+            }
+            _ => Command::Unknown(
+                head.to_string(),
+                cmd.body().into_iter().map(String::from).collect(),
+            )
+        },
+        redirect,
+    })
 }
 
 struct SimpleCompleter;
@@ -156,12 +161,15 @@ impl Reader for SimpleReader {
 #[test]
 fn parse_simple() {
     let c = parse_command_simple(&Prefs::default(), " test 1 abc 2").unwrap();
-    assert_eq!(c, Shell::Run(Command::Unknown(
-        String::from("test"),
-        vec![
-            String::from("1"),
-            String::from("abc"),
-            String::from("2"),
-        ],
-    )));
+    assert_eq!(c, Shell::Run {
+        cmd: Command::Unknown(
+            String::from("test"),
+            vec![
+                String::from("1"),
+                String::from("abc"),
+                String::from("2"),
+            ],
+        ),
+        redirect: None,
+    });
 }
