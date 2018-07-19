@@ -165,38 +165,50 @@ impl Backend {
                 self.jobs.insert(id, cancel_send);
                 let running_commands = self.running_commands.clone();
 
+                let is_running = Arc::new(AtomicBool::new(true));
+
                 thread::spawn(move || {
                     cancel_recv.recv().unwrap();
                     eprintln!("{} received cancel", id);
 
-                    // handle.lock().unwrap().kill().unwrap();
+                    handle.lock().unwrap().kill().unwrap();
 
                     eprintln!("{} finished cancel", id);
                 });
 
-                thread::spawn(move || {
-                    let mut buf = [0u8; 1024];
+                if do_forward {
+                    let is_running_clone = is_running.clone();
+                    thread::spawn(move || {
+                        let mut buf = [0u8; 1024];
 
-                    if do_forward {
                         loop {
                             let len = output_reader.read(&mut buf).unwrap();
                             eprintln!("{} read stdout {:?}", id, len);
                             if len == 0 {
+                                // assert!(!is_running_clone.load(Ordering::SeqCst));
                                 break;
                             }
                             write_pipe(stdout_pipe, buf[..len].to_vec()).unwrap();
                         }
-                    }
+                    });
+                }
+
+                let is_running_clone = is_running.clone();
+                thread::spawn(move || {
+                    let mut buf = [0u8; 1024];
 
                     loop {
                         let len = error_reader.read(&mut buf).unwrap();
                         eprintln!("{} read stderr {:?}", id, len);
                         if len == 0 {
+                            // assert!(!is_running_clone.load(Ordering::SeqCst));
                             break;
                         }
                         write_pipe(stderr_pipe, buf[..len].to_vec()).unwrap();
                     }
+                });
 
+                thread::spawn(move || {
                     let exit_code = cancel_handle.lock().unwrap().wait().unwrap().code().unwrap_or(-1);
                     eprintln!("{} exit {}", id, exit_code);
 

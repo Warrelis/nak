@@ -37,6 +37,7 @@ use prefs::Prefs;
 use comm::{BackendRemote, launch_backend};
 use edit::{Reader, SimpleReader};
 
+#[derive(Debug)]
 pub enum Event {
     Remote(Multiplex<RpcResponse>),
     Key(termion::event::Key),
@@ -101,8 +102,10 @@ impl Exec {
                             RpcResponse::Pipe { id, data } => {
                                 if id == stdout_pipe {
                                     io::stdout().write(&data)?;
+                                    // io::stdout().flush()?;
                                 } else if id == stderr_pipe {
                                     io::stderr().write(&data)?;
+                                    // io::stdout().flush()?;
                                 } else {
                                     assert!(false, "{} {} {}", id, stdout_pipe, stderr_pipe);
                                 }
