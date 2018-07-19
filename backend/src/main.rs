@@ -3,10 +3,15 @@ extern crate serde_derive;
 extern crate serde;
 extern crate serde_json;
 #[macro_use]
-    extern crate failure;
+extern crate failure;
 extern crate os_pipe;
+
+#[cfg(unix)]
 extern crate ctrlc;
+
+#[cfg(unix)]
 extern crate unix_socket;
+
 extern crate base64;
 extern crate rand;
 extern crate protocol;
@@ -24,7 +29,10 @@ use failure::Error;
 use std::process as pr;
 use os_pipe::IntoStdio;
 use os_pipe::PipeWriter;
+
+#[cfg(unix)]
 use unix_socket::{UnixStream, UnixListener};
+
 use rand::{Rng, thread_rng};
 
 use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process};
@@ -317,13 +325,80 @@ fn random_key() -> String {
     base64::encode_config(&bytes, base64::URL_SAFE)
 }
 
+#[cfg(unix)]
+fn setup_editback_socket(
+    socket_path: &str, 
+    running_commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
+    waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>) -> Result<(), Error>
+{
+    let listener = UnixListener::bind(socket_path).expect("bind listen socket");
+
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            match stream {
+                Ok(mut stream) => {
+                    let running_commands = running_commands.clone();
+                    let waiting_edits = waiting_edits.clone();
+                    thread::spawn(move || {
+
+                        let (sender, receiver) = mpsc::channel();
+                        {
+                            let mut reader = BufReader::new(&mut stream);
+
+                            let mut key = String::new();
+                            reader.read_line(&mut key).unwrap();
+                            assert_eq!(&key[key.len()-1..], "\n");
+                            key.pop();
+
+                            let command_info = running_commands.lock().unwrap().get(&key).cloned().expect("key not found");
+
+                            let mut line = String::new();
+                            reader.read_line(&mut line).unwrap();
+
+                            let req: EditRequest = serde_json::from_str(&line).unwrap();
+
+                            waiting_edits.lock().unwrap().insert(0, sender);
+                            write_edit_file_request(command_info.id, 0, req.file_name, req.data).unwrap();
+
+                        }
+
+                        let msg = EditResponse {
+                            data: receiver.recv().unwrap(),
+                        };
+
+                        stream.write((serde_json::to_string(&msg).unwrap() + "\n").as_bytes()).unwrap();
+                    });
+                }
+                Err(err) => {
+                    eprintln!("error: {:?}", err);
+                    break;
+                }
+            }
+        }
+
+        // close the listener socket
+        drop(listener);
+    });
+    Ok(())
+}
+
+
+#[cfg(not(unix))]
+fn setup_editback_socket(
+    socket_path: &str, 
+    running_commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
+    waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>) -> Result<(), Error>
+{
+    Ok(())
+}
+
 fn run_backend() -> Result<(), Error> {
 
     let mut backend = Backend::default();
 
-    ctrlc::set_handler(move || {
-        eprintln!("backend caught CtrlC");
-    }).expect("Error setting CtrlC handler");
+    // ctrlc::set_handler(move || {
+    //     eprintln!("backend caught CtrlC");
+    // }).expect("Error setting CtrlC handler");
 
     // eprintln!("spawn_self");
     write!(io::stdout(), "nxQh6wsIiiFomXWE+7HQhQ==\n").unwrap();
@@ -332,63 +407,11 @@ fn run_backend() -> Result<(), Error> {
     let socket_path = format!("/tmp/nak-backend-{}", random_key());
 
     eprintln!("socket_path: {:?}", socket_path);
-
-    let listener = UnixListener::bind(&socket_path).expect("bind listen socket");
-
-    env::set_var("NAK_SOCKET_PATH", socket_path);
+    env::set_var("NAK_SOCKET_PATH", &socket_path);
     env::set_var("PAGER", "nak-backend pager");
     env::set_var("EDITOR", format!("{} editor", env::current_exe()?.to_str().expect("current exe")));
 
-    {
-        let running_commands = backend.running_commands.clone();
-        let waiting_edits = backend.waiting_edits.clone();
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(mut stream) => {
-                        let running_commands = running_commands.clone();
-                        let waiting_edits = waiting_edits.clone();
-                        thread::spawn(move || {
-
-                            let (sender, receiver) = mpsc::channel();
-                            {
-                                let mut reader = BufReader::new(&mut stream);
-
-                                let mut key = String::new();
-                                reader.read_line(&mut key).unwrap();
-                                assert_eq!(&key[key.len()-1..], "\n");
-                                key.pop();
-
-                                let command_info = running_commands.lock().unwrap().get(&key).cloned().expect("key not found");
-
-                                let mut line = String::new();
-                                reader.read_line(&mut line).unwrap();
-
-                                let req: EditRequest = serde_json::from_str(&line).unwrap();
-
-                                waiting_edits.lock().unwrap().insert(0, sender);
-                                write_edit_file_request(command_info.id, 0, req.file_name, req.data).unwrap();
-
-                            }
-
-                            let msg = EditResponse {
-                                data: receiver.recv().unwrap(),
-                            };
-
-                            stream.write((serde_json::to_string(&msg).unwrap() + "\n").as_bytes()).unwrap();
-                        });
-                    }
-                    Err(err) => {
-                        eprintln!("error: {:?}", err);
-                        break;
-                    }
-                }
-            }
-
-            // close the listener socket
-            drop(listener);
-        });
-    }
+    setup_editback_socket(&socket_path, backend.running_commands.clone(), backend.waiting_edits.clone())?;
 
     loop {
         let mut input = String::new();
@@ -454,9 +477,11 @@ fn run_backend() -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn run_pager() -> Result<(), Error> {
     let socket_path = env::var("NAK_SOCKET_PATH").unwrap();
     let command_key = env::var("NAK_COMMAND_KEY").unwrap();
+
 
     let mut stream = UnixStream::connect(socket_path).unwrap();
     stream.write_all((command_key + "\n").as_bytes()).unwrap();
@@ -466,6 +491,12 @@ fn run_pager() -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(not(unix))]
+fn run_pager() -> Result<(), Error> {
+    unimplemented!();
+}
+
+#[cfg(unix)]
 fn run_editor(path: &str) -> Result<(), Error> {
     let mut contents = Vec::new();
     let mut handle = OpenOptions::new().read(true).write(true).open(path)?;
@@ -493,6 +524,12 @@ fn run_editor(path: &str) -> Result<(), Error> {
     handle.write_all(&resp.data).unwrap();
 
     Ok(())
+}
+
+
+#[cfg(not(unix))]
+fn run_editor(path: &str) -> Result<(), Error> {
+    unimplemented!();
 }
 
 fn main() -> Result<(), Error> {

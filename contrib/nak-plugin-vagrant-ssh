@@ -48,12 +48,16 @@ def do(cmd, file):
     assert errs is None
     return outs
 
-do(['sh', '-c', 'cat > nak-backend'], file)
-assert b'6981b4c374ca5df30b9bdc00837ff14dcfc2901b  nak-backend\n' == do(['sha1sum nak-backend'], b'')
-do(['chmod', '+x', 'nak-backend'], b'')
-do(['chmod', '+x', 'nak-backend'], b'')
+if 'linux' in vm or 'ubuntu' in vm:
+    do(['sh', '-c', 'cat > nak-backend'], file)
+    assert b'6981b4c374ca5df30b9bdc00837ff14dcfc2901b  nak-backend\n' == do(['sha1sum nak-backend'], b'')
+    do(['chmod', '+x', 'nak-backend'], b'')
+    do(['chmod', '+x', 'nak-backend'], b'')
 
-
-ssh_command = flatten(['ssh'] + [['-o', k + '=' + v] for k, v in config.items()] + [config['HostName'], './nak-backend'])
+    ssh_command = flatten(['ssh'] + [['-o', k + '=' + v] for k, v in config.items()] + [config['HostName'], './nak-backend'])
+elif 'win' in vm:
+    ssh_command = flatten(['ssh'] + [['-o', k + '=' + v] for k, v in config.items()] + [config['HostName'], '/cygdrive/c/Users/vagrant/nak/nak/target/debug/backend'])
+else:
+    assert False
 proc = subprocess.Popen(ssh_command)
 proc.wait()
