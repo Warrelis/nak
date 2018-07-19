@@ -72,6 +72,10 @@ pub enum RpcRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RpcResponse {
+    // RemoteReady {
+    //     id: usize,
+    //     hostname: String,
+    // },
     Pipe {
         id: usize,
         data: Vec<u8>,

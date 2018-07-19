@@ -17,6 +17,7 @@ tokio = "0.1.7"
 [target.'cfg(unix)'.dependencies]
 unix_socket = "*"
 ctrlc = "*"
+nix = "*"
 
 [dependencies.protocol]
 path = "../protocol"
