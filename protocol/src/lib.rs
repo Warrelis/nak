@@ -127,10 +127,9 @@ enum RemoteRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RemoteResponse {
-    // RemoteReady {
-    //     id: usize,
-    //     hostname: String,
-    // },
+    RemoteReady {
+        info: RemoteInfo,
+    },
     CommandDone {
         id: ProcessId,
         exit_code: i64,
@@ -186,7 +185,15 @@ struct ProcessState {
     parent: RemoteId,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RemoteInfo {
+    pub hostname: String,
+    pub username: String,
+    pub working_dir: String,
+}
+
 pub trait EndpointHandler<T: Transport>: Sized {
+    fn remote_ready(endpoint: &mut Endpoint<T, Self>, id: RemoteId, remote_info: RemoteInfo) -> Result<(), Error>;
     fn command_done(endpoint: &mut Endpoint<T, Self>, id: ProcessId, exit_code: i64) -> Result<(), Error>;
     fn directory_listing(endpoint: &mut Endpoint<T, Self>, id: usize, items: Vec<String>) -> Result<(), Error>;
     fn edit_request(endpoint: &mut Endpoint<T, Self>, edit_id: usize, command_id: ProcessId, name: String, data: Vec<u8>) -> Result<(), Error>;
@@ -238,6 +245,9 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
     pub fn receive(&mut self, message: Response) -> Result<(), Error> {
         match message.message.0 {
+            RemoteResponse::RemoteReady { info } => {
+                EndpointHandler::remote_ready(self, RemoteId(message.remote_id), info)
+            }
             RemoteResponse::CommandDone { id, exit_code } => {
                 EndpointHandler::command_done(self, id, exit_code)
             }
@@ -435,6 +445,14 @@ impl<T: Transport> Backend<T> {
         Backend {
             trans,
         }
+    }
+
+    pub fn remote_ready(&mut self, info: RemoteInfo) -> Result<(), Error> {
+        self.trans.send(&ser_to_frontend(RemoteId(0), RemoteResponse::RemoteReady {
+            info,
+        }))?;
+
+        Ok(())
     }
 
     pub fn pipe(&mut self, id: WritePipe, data: Vec<u8>) -> Result<(), Error> {

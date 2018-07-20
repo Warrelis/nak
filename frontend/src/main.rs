@@ -57,40 +57,63 @@ struct Exec {
 
 impl Exec {
     fn one_loop(&mut self) -> Result<bool, Error> {
-        match self.remote.handler.waiting_for {
-            None => {
-                let cmd = self.reader.get_command(&mut self.remote)?;
+        if let Some(_) = self.remote.handler.waiting_for_remote {
+            let msg = self.receiver.recv()?;
 
-                match cmd {
-                    Shell::Exit => {
-                        if self.remote.handler.remotes.len() > 1 {
-                            self.remote.end_remote()?;
-                        } else {
-                            return Ok(false)
-                        }
-                    }
-                    Shell::DoNothing => {}
-                    Shell::BeginRemote(cmd) => {
-                        self.remote.begin_remote(cmd)?;
-                    }
-                    Shell::Run { cmd, redirect } => {
-                        let res = self.remote.run(cmd, redirect)?;
-                        self.remote.handler.waiting_for = Some(res);
-                    }
+            match msg {
+                Event::Remote(msg) => {
+                    self.remote.receive(msg.clone())?;
+                }
+                Event::CtrlC => {
+                    panic!();
+                }
+                Event::Key(_) => {
+                    panic!();
                 }
             }
-            Some(ReadProcess { id, .. }) => {
-                let msg = self.receiver.recv()?;
+        } else {
+            match self.remote.handler.waiting_for {
+                None => {
+                    let prompt = {
+                        let top_remote = &self.remote.handler.remotes.last().unwrap().1;
+                        format!("[{}:{}] {}$ ",
+                            self.remote.handler.remotes.len(),
+                            top_remote.hostname,
+                            top_remote.working_dir)
+                    };
+                    let cmd = self.reader.get_command(prompt, &mut self.remote)?;
 
-                match msg {
-                    Event::Remote(msg) => {
-                        self.remote.receive(msg.clone())?;
+                    match cmd {
+                        Shell::Exit => {
+                            if self.remote.handler.remotes.len() > 1 {
+                                self.remote.end_remote()?;
+                            } else {
+                                return Ok(false)
+                            }
+                        }
+                        Shell::DoNothing => {}
+                        Shell::BeginRemote(cmd) => {
+                            self.remote.begin_remote(cmd)?;
+                        }
+                        Shell::Run { cmd, redirect } => {
+                            let res = self.remote.run(cmd, redirect)?;
+                            self.remote.handler.waiting_for = Some(res);
+                        }
                     }
-                    Event::CtrlC => {
-                        self.remote.cancel(id)?;
-                    }
-                    Event::Key(_) => {
-                        panic!();
+                }
+                Some(ReadProcess { id, .. }) => {
+                    let msg = self.receiver.recv()?;
+
+                    match msg {
+                        Event::Remote(msg) => {
+                            self.remote.receive(msg.clone())?;
+                        }
+                        Event::CtrlC => {
+                            self.remote.cancel(id)?;
+                        }
+                        Event::Key(_) => {
+                            panic!();
+                        }
                     }
                 }
             }

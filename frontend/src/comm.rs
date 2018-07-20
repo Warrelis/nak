@@ -15,7 +15,19 @@ use libc;
 use serde_json;
 use tempfile::tempdir;
 
-use protocol::{ Response, Command, Transport, Endpoint, RemoteId, EndpointHandler, ProcessId, WritePipe, ReadPipe, ReadProcess };
+use protocol::{
+    Response,
+    Command,
+    Transport,
+    Endpoint,
+    RemoteId,
+    EndpointHandler,
+    ProcessId,
+    WritePipe,
+    ReadPipe,
+    ReadProcess,
+    RemoteInfo,
+};
 
 use Event;
 
@@ -32,11 +44,19 @@ impl Transport for PipeTransport {
 }
 
 pub struct StackedRemotes {
-    pub remotes: Vec<RemoteId>,
+    pub remotes: Vec<(RemoteId, RemoteInfo)>,
     pub waiting_for: Option<ReadProcess>,
+    pub waiting_for_remote: Option<RemoteId>,
 }
 
 impl<T: Transport> EndpointHandler<T> for StackedRemotes {
+    fn remote_ready(endpoint: &mut Endpoint<T, Self>, id: RemoteId, remote_info: RemoteInfo) -> Result<(), Error> {
+        assert_eq!(endpoint.handler.waiting_for_remote.expect("no remote waiting"), id);
+        endpoint.handler.waiting_for_remote = None;
+        endpoint.handler.remotes.push((id, remote_info));
+        Ok(())
+    }
+
     fn pipe(_endpoint: &mut Endpoint<T, Self>, _id: ReadPipe, data: Vec<u8>) -> Result<(), Error> {
         Ok(io::stdout().write_all(&data)?)
     }
@@ -100,10 +120,10 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendEndpoint, Er
 
     let mut endpoint = Endpoint::new(
         PipeTransport { input: input_writer },
-        StackedRemotes { remotes: vec![], waiting_for: None });
+        StackedRemotes { remotes: vec![], waiting_for: None, waiting_for_remote: None });
 
     let root = endpoint.root();
-    endpoint.handler.remotes.push(root);
+    endpoint.handler.waiting_for_remote = Some(root);
 
     let mut output = BufReader::new(output_reader);
 
@@ -148,7 +168,7 @@ pub trait EndpointExt {
 
 impl EndpointExt for BackendEndpoint {
     fn cur_remote(&self) -> RemoteId {
-        *self.handler.remotes.last().unwrap()
+        self.handler.remotes.last().unwrap().0
     }
 
     fn run(&mut self, c: Command, redirect: Option<String>) -> Result<ReadProcess, Error> {
@@ -166,12 +186,13 @@ impl EndpointExt for BackendEndpoint {
     fn begin_remote(&mut self, c: Command) -> Result<RemoteId, Error> {
         let cur_remote = self.cur_remote();
         let remote = self.remote(cur_remote, c)?;
-        self.handler.remotes.push(remote);
+        assert!(self.handler.waiting_for_remote.is_none());
+        self.handler.waiting_for_remote = Some(remote);
         Ok(remote)
     }
 
     fn end_remote(&mut self) -> Result<(), Error> {
-        let cur_remote = self.handler.remotes.pop().unwrap();
+        let cur_remote = self.handler.remotes.pop().unwrap().0;
         Ok(self.close_remote(cur_remote)?)
     }
 

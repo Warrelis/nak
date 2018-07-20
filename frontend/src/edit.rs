@@ -17,7 +17,7 @@ use std::io::stdout;
 
 
 pub trait Reader {
-    fn get_command(&mut self, backend: &BackendEndpoint) -> Result<Shell, Error>;
+    fn get_command(&mut self, prompt: String, backend: &BackendEndpoint) -> Result<Shell, Error>;
     fn save_history(&mut self);
 }
 
@@ -108,7 +108,7 @@ impl SimpleReader {
 }
 
 impl Reader for SimpleReader {
-    fn get_command(&mut self, backend: &BackendEndpoint) -> Result<Shell, Error> {
+    fn get_command(&mut self, prompt: String, _backend: &BackendEndpoint) -> Result<Shell, Error> {
 
         fn handle_keys<'a, T, W: Write, M: KeyMap<'a, W, T>>(
             mut keymap: M,
@@ -126,8 +126,6 @@ impl Reader for SimpleReader {
 
             Ok(keymap.into())
         }
-
-        let prompt = format!("[{}]$ ", backend.handler.remotes.len());
 
         let buffer = Buffer::new();
 

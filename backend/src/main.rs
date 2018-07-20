@@ -6,19 +6,17 @@ extern crate serde_json;
 extern crate failure;
 extern crate os_pipe;
 
-#[cfg(unix)]
-extern crate ctrlc;
-
-#[cfg(unix)]
-extern crate unix_socket;
-
 extern crate base64;
 extern crate rand;
 extern crate protocol;
 
 extern crate futures;
 extern crate tokio;
-extern crate nix;
+extern crate hostname;
+
+#[cfg(unix)] extern crate ctrlc;
+#[cfg(unix)] extern crate unix_socket;
+#[cfg(unix)] extern crate nix;
 
 mod machine;
 
@@ -57,7 +55,8 @@ use protocol::{
     Condition,
     ProcessId,
     ExitStatus,
-    Backend
+    Backend,
+    RemoteInfo,
 };
 
 use machine::{Machine, Task, Status};
@@ -568,6 +567,16 @@ fn run_backend() -> Result<(), Error> {
         backend.backtraffic.clone(),
         backend.running_commands.clone(),
         backend.waiting_edits.clone())?;
+
+    let hostname = hostname::get_hostname().unwrap();
+    let username = String::from("dummyuser");
+    let working_dir = String::from("/working/dir");
+
+    backend.backtraffic.lock().unwrap().remote_ready(RemoteInfo {
+        hostname,
+        username,
+        working_dir,
+    })?;
 
     loop {
         let mut input = String::new();
