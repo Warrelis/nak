@@ -97,6 +97,12 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
         self.running.insert(pid, state);
     }
 
+    pub fn start_completed(&mut self, pid: Id, status: ExitStatus) {
+        assert!(self.to_run.remove(&pid));
+
+        self.finished.insert(pid, status);
+    }
+
     pub fn completed(&mut self, pid: Id, status: ExitStatus) -> Vec<Task<Id, Cmd>> {
         let mut tasks = Vec::new();
 

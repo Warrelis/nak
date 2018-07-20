@@ -4,7 +4,6 @@ extern crate serde;
 extern crate serde_json;
 extern crate failure;
 
-use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
 use failure::Error;
@@ -29,9 +28,15 @@ impl Command {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Multiplex<M> {
+pub struct Response {
     pub remote_id: usize,
-    pub message: M
+    pub message: RemoteResponseEnvelope,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Request {
+    pub remote_id: usize,
+    pub message: RemoteRequestEnvelope,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -45,18 +50,47 @@ pub enum ExitStatus {
 
 pub type Condition = Option<ExitStatus>;
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct ReadPipe(usize);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct WritePipe(usize);
+
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Process {
+pub struct WriteProcess {
     pub id: ProcessId,
-    pub stdout_pipe: usize,
-    pub stderr_pipe: usize,
+    pub stdin: ReadPipe,
+    pub stdout: WritePipe,
+    pub stderr: WritePipe,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReadProcess {
+    pub id: ProcessId,
+    pub stdin: WritePipe,
+    pub stdout: ReadPipe,
+    pub stderr: ReadPipe,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct AbstractProcess {
+    id: ProcessId,
+    stdin: usize,
+    stdout: usize,
+    stderr: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum RpcRequest {
+pub struct RemoteRequestEnvelope(RemoteRequest);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RemoteResponseEnvelope(RemoteResponse);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+enum RemoteRequest {
     BeginCommand {
         block_for: HashMap<ProcessId, Condition>,
-        process: Process,
+        process: AbstractProcess,
         command: Command,
     },
     CancelCommand {
@@ -80,19 +114,23 @@ pub enum RpcRequest {
     FinishEdit {
         id: usize,
         data: Vec<u8>,
+    },
+    PipeData {
+        id: usize,
+        data: Vec<u8>,
+    },
+    PipeRead {
+        id: usize,
+        count_bytes: usize,
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum RpcResponse {
+pub enum RemoteResponse {
     // RemoteReady {
     //     id: usize,
     //     hostname: String,
     // },
-    Pipe {
-        id: usize,
-        data: Vec<u8>,
-    },
     CommandDone {
         id: ProcessId,
         exit_code: i64,
@@ -106,6 +144,14 @@ pub enum RpcResponse {
         edit_id: usize,
         name: String,
         data: Vec<u8>,
+    },
+    PipeData {
+        id: usize,
+        data: Vec<u8>,
+    },
+    PipeRead {
+        id: usize,
+        count_bytes: usize,
     }
 }
 
@@ -141,10 +187,11 @@ struct ProcessState {
 }
 
 pub trait EndpointHandler<T: Transport>: Sized {
-    fn pipe(endpoint: &mut Endpoint<T, Self>, id: usize, data: Vec<u8>) -> Result<(), Error>;
     fn command_done(endpoint: &mut Endpoint<T, Self>, id: ProcessId, exit_code: i64) -> Result<(), Error>;
     fn directory_listing(endpoint: &mut Endpoint<T, Self>, id: usize, items: Vec<String>) -> Result<(), Error>;
     fn edit_request(endpoint: &mut Endpoint<T, Self>, edit_id: usize, command_id: ProcessId, name: String, data: Vec<u8>) -> Result<(), Error>;
+    fn pipe(endpoint: &mut Endpoint<T, Self>, id: ReadPipe, data: Vec<u8>) -> Result<(), Error>;
+    fn pipe_read(endpoint: &mut Endpoint<T, Self>, id: WritePipe, count_bytes: usize) -> Result<(), Error>;
 }
 
 pub struct Endpoint<T: Transport, H: EndpointHandler<T>> {
@@ -156,10 +203,17 @@ pub struct Endpoint<T: Transport, H: EndpointHandler<T>> {
     pipes: HashSet<usize>,
 }
 
-fn ser_to_endpoint(remote: RemoteId, message: impl Serialize) -> Vec<u8> {
-    (serde_json::to_string(&Multiplex {
+fn ser_to_endpoint(remote: RemoteId, message: RemoteRequest) -> Vec<u8> {
+    (serde_json::to_string(&Request {
         remote_id: remote.0,
-        message,
+        message: RemoteRequestEnvelope(message),
+    }).unwrap() + "\n").into_bytes()
+}
+
+fn ser_to_frontend(remote: RemoteId, message: RemoteResponse) -> Vec<u8> {
+    (serde_json::to_string(&Response {
+        remote_id: remote.0,
+        message: RemoteResponseEnvelope(message),
     }).unwrap() + "\n").into_bytes()
 }
 
@@ -182,20 +236,24 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
        RemoteId(0)
     }
 
-    pub fn receive(&mut self, message: Multiplex<RpcResponse>) -> Result<(), Error> {
-        match message.message {
-            RpcResponse::Pipe { id, data } => {
-                assert!(self.pipes.contains(&id));
-                EndpointHandler::pipe(self, id, data)
-            }
-            RpcResponse::CommandDone { id, exit_code } => {
+    pub fn receive(&mut self, message: Response) -> Result<(), Error> {
+        match message.message.0 {
+            RemoteResponse::CommandDone { id, exit_code } => {
                 EndpointHandler::command_done(self, id, exit_code)
             }
-            RpcResponse::DirectoryListing { id, items } => {
+            RemoteResponse::DirectoryListing { id, items } => {
                 EndpointHandler::directory_listing(self, id, items)
             }
-            RpcResponse::EditRequest { edit_id, command_id, name, data } => {
+            RemoteResponse::EditRequest { edit_id, command_id, name, data } => {
                 EndpointHandler::edit_request(self, edit_id, command_id, name, data)
+            }
+            RemoteResponse::PipeData { id, data } => {
+                assert!(self.pipes.contains(&id));
+                EndpointHandler::pipe(self, ReadPipe(id), data)
+            }
+            RemoteResponse::PipeRead { id, count_bytes } => {
+                assert!(self.pipes.contains(&id));
+                EndpointHandler::pipe_read(self, WritePipe(id), count_bytes)
             }
         }
     }
@@ -205,7 +263,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
         let id = self.ids.next_id();
 
-        self.trans.send(&ser_to_endpoint(remote, RpcRequest::BeginRemote {
+        self.trans.send(&ser_to_endpoint(remote, RemoteRequest::BeginRemote {
             id,
             command,
         }))?;
@@ -219,10 +277,11 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         Ok(RemoteId(id))
     }
 
-    pub fn command(&mut self, remote: RemoteId, command: Command, block_for: HashMap<ProcessId, Condition>, redirect: Option<Handle>) -> Result<Process, Error> {
+    pub fn command(&mut self, remote: RemoteId, command: Command, block_for: HashMap<ProcessId, Condition>, redirect: Option<Handle>) -> Result<ReadProcess, Error> {
         assert!(self.remotes.contains_key(&remote));
 
         let id = ProcessId(self.ids.next_id());
+        let stdin_pipe = self.ids.next_id();
         let stdout_pipe = match redirect {
             Some(h) => {
                 assert!(self.pipes.remove(&h.0));
@@ -238,13 +297,14 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
         self.pipes.insert(stderr_pipe);
 
-        let process = Process {
+        let process = AbstractProcess {
             id,
-            stdout_pipe,
-            stderr_pipe,
+            stdin: stdin_pipe,
+            stdout: stdout_pipe,
+            stderr: stderr_pipe,
         };
 
-        self.trans.send(&ser_to_endpoint(remote, RpcRequest::BeginCommand {
+        self.trans.send(&ser_to_endpoint(remote, RemoteRequest::BeginCommand {
             block_for,
             process,
             command,
@@ -252,7 +312,12 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
         self.jobs.insert(id, ProcessState { parent: remote });
 
-        Ok(process)
+        Ok(ReadProcess {
+            id,
+            stdin: WritePipe(stdin_pipe),
+            stdout: ReadPipe(stdout_pipe),
+            stderr: ReadPipe(stderr_pipe),
+        })
     }
 
     pub fn open_file(&mut self, remote: RemoteId, path: String) -> Result<Handle, Error> {
@@ -262,7 +327,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
         self.pipes.insert(id);
 
-        self.trans.send(&ser_to_endpoint(remote, RpcRequest::OpenFile {
+        self.trans.send(&ser_to_endpoint(remote, RemoteRequest::OpenFile {
             id,
             path,
         }))?;
@@ -275,7 +340,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
         // TODO: close jobs?
 
-        self.trans.send(&ser_to_endpoint(state.parent.expect("closing root remote"), RpcRequest::EndRemote {
+        self.trans.send(&ser_to_endpoint(state.parent.expect("closing root remote"), RemoteRequest::EndRemote {
             id: remote.0,
         }))?;
 
@@ -287,7 +352,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
         assert!(self.remotes.contains_key(&process_state.parent));
 
-        self.trans.send(&ser_to_endpoint(process_state.parent, RpcRequest::CancelCommand {
+        self.trans.send(&ser_to_endpoint(process_state.parent, RemoteRequest::CancelCommand {
             id,
         }))?;
 
@@ -299,7 +364,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
         assert!(self.remotes.contains_key(&process_state.parent));
 
-        self.trans.send(&ser_to_endpoint(process_state.parent, RpcRequest::FinishEdit {
+        self.trans.send(&ser_to_endpoint(process_state.parent, RemoteRequest::FinishEdit {
             id: edit_id,
             data,
         }))?;
@@ -308,21 +373,73 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
     }
 }
 
-#[derive(Default)]
-pub struct BackTraffic<T: Transport> {
-    trans: T,
+pub trait BackendHandler {
+    fn begin_command(&mut self, block_for: HashMap<ProcessId, Condition>, process: WriteProcess, command: Command) -> Result<(), Error>;
+    fn cancel_command(&mut self, id: ProcessId) -> Result<(), Error>;
+    fn begin_remote(&mut self, id: usize, command: Command) -> Result<(), Error>;
+    fn open_file(&mut self, id: WritePipe, path: String) -> Result<(), Error>;
+    fn end_remote(&mut self, id: usize) -> Result<(), Error>;
+    fn list_directory(&mut self, id: usize, path: String) -> Result<(), Error>;
+    fn finish_edit(&mut self, id: usize, data: Vec<u8>) -> Result<(), Error>;
+    fn pipe_data(&mut self, id: usize, data: Vec<u8>) -> Result<(), Error>;
+    fn pipe_read(&mut self, id: usize, count_bytes: usize) -> Result<(), Error>;
 }
 
-impl<T: Transport> BackTraffic<T> {
-    pub fn new(trans: T) -> BackTraffic<T> {
-        BackTraffic {
+#[derive(Default)]
+pub struct Backend<T: Transport> {
+    pub trans: T,
+}
+
+impl Request {
+    pub fn route<H: BackendHandler>(self, handler: &mut H) -> Result<(), Error> {
+        match self.message.0 {
+            RemoteRequest::BeginCommand { block_for, process, command, } => {
+                let process = WriteProcess {
+                    id: process.id,
+                    stdin: ReadPipe(process.stdin),
+                    stdout: WritePipe(process.stdout),
+                    stderr: WritePipe(process.stderr),
+                };
+                handler.begin_command(block_for, process, command)
+            }
+            RemoteRequest::CancelCommand { id, } => {
+                handler.cancel_command(id)
+            }
+            RemoteRequest::BeginRemote { id, command, } => {
+                handler.begin_remote(id, command)
+            }
+            RemoteRequest::OpenFile { id, path, } => {
+                handler.open_file(WritePipe(id), path)
+            }
+            RemoteRequest::EndRemote { id, } => {
+                handler.end_remote(id)
+            }
+            RemoteRequest::ListDirectory { id, path, } => {
+                handler.list_directory(id, path)
+            }
+            RemoteRequest::FinishEdit { id, data, } => {
+                handler.finish_edit(id, data)
+            }
+            RemoteRequest::PipeData { id, data, } => {
+                handler.pipe_data(id, data)
+            }
+            RemoteRequest::PipeRead { id, count_bytes, } => {
+                handler.pipe_read(id, count_bytes)
+            }
+        }
+    }
+}
+
+impl<T: Transport> Backend<T> {
+    pub fn new(trans: T) -> Backend<T> {
+        Backend {
             trans,
         }
     }
 
-    pub fn pipe(&mut self, id: usize, data: Vec<u8>) -> Result<(), Error> {
-        self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::Pipe {
-            id,
+    pub fn pipe(&mut self, id: WritePipe, data: Vec<u8>) -> Result<(), Error> {
+        self.trans.send(&ser_to_frontend(RemoteId(0), RemoteResponse::PipeData {
+            id: id.0,
             data,
         }))?;
 
@@ -330,7 +447,7 @@ impl<T: Transport> BackTraffic<T> {
     }
 
     pub fn command_done(&mut self, id: ProcessId, exit_code: i64) -> Result<(), Error> {
-        self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::CommandDone {
+        self.trans.send(&ser_to_frontend(RemoteId(0), RemoteResponse::CommandDone {
             id,
             exit_code,
         }))?;
@@ -339,7 +456,7 @@ impl<T: Transport> BackTraffic<T> {
     }
 
     pub fn directory_listing(&mut self, id: usize, items: Vec<String>) -> Result<(), Error> {
-        self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::DirectoryListing {
+        self.trans.send(&ser_to_frontend(RemoteId(0), RemoteResponse::DirectoryListing {
             id,
             items,
         }))?;
@@ -348,7 +465,7 @@ impl<T: Transport> BackTraffic<T> {
     }
 
     pub fn edit_request(&mut self, command_id: ProcessId, edit_id: usize, name: String, data: Vec<u8>) -> Result<(), Error> {
-        self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::EditRequest {
+        self.trans.send(&ser_to_frontend(RemoteId(0), RemoteResponse::EditRequest {
             command_id,
             edit_id,
             name,

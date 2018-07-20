@@ -20,7 +20,7 @@ use std::sync::mpsc;
 
 use failure::Error;
 
-use protocol::{Multiplex, RpcResponse, Command, Process};
+use protocol::{Response, Command, ReadProcess};
 
 mod parse;
 mod edit;
@@ -33,7 +33,7 @@ use edit::{Reader, SimpleReader};
 
 #[derive(Debug)]
 pub enum Event {
-    Remote(Multiplex<RpcResponse>),
+    Remote(Response),
     Key(termion::event::Key),
     CtrlC,
 }
@@ -79,7 +79,7 @@ impl Exec {
                     }
                 }
             }
-            Some(Process { id, .. }) => {
+            Some(ReadProcess { id, .. }) => {
                 let msg = self.receiver.recv()?;
 
                 match msg {

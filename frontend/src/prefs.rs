@@ -7,8 +7,6 @@ use std::io;
 use failure::Error;
 use serde_json;
 
-use Command;
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Item {
     Literal(String),

@@ -15,7 +15,7 @@ use libc;
 use serde_json;
 use tempfile::tempdir;
 
-use protocol::{ RpcResponse, Process, Multiplex, Command, Transport, Endpoint, RemoteId, EndpointHandler, ProcessId };
+use protocol::{ Response, Command, Transport, Endpoint, RemoteId, EndpointHandler, ProcessId, WritePipe, ReadPipe, ReadProcess };
 
 use Event;
 
@@ -33,11 +33,11 @@ impl Transport for PipeTransport {
 
 pub struct StackedRemotes {
     pub remotes: Vec<RemoteId>,
-    pub waiting_for: Option<Process>,
+    pub waiting_for: Option<ReadProcess>,
 }
 
 impl<T: Transport> EndpointHandler<T> for StackedRemotes {
-    fn pipe(_endpoint: &mut Endpoint<T, Self>, _id: usize, data: Vec<u8>) -> Result<(), Error> {
+    fn pipe(_endpoint: &mut Endpoint<T, Self>, _id: ReadPipe, data: Vec<u8>) -> Result<(), Error> {
         Ok(io::stdout().write_all(&data)?)
     }
 
@@ -69,6 +69,10 @@ impl<T: Transport> EndpointHandler<T> for StackedRemotes {
 
         endpoint.finish_edit(command_id, edit_id, new_data)?;
         Ok(())
+    }
+
+    fn pipe_read(_endpoint: &mut Endpoint<T, Self>, _id: WritePipe, _count_bytes: usize) -> Result<(), Error> {
+        panic!();
     }
 }
 
@@ -115,7 +119,7 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendEndpoint, Er
                     if n == 0 {
                         continue;
                     }
-                    let rpc: Multiplex<RpcResponse> = serde_json::from_str(&input).unwrap();
+                    let rpc: Response = serde_json::from_str(&input).unwrap();
 
                     sender.send(Event::Remote(rpc)).unwrap();
                 }
@@ -130,7 +134,7 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendEndpoint, Er
 pub trait EndpointExt {
     fn cur_remote(&self) -> RemoteId;
 
-    fn run(&mut self, c: Command, redirect: Option<String>) -> Result<Process, Error>;
+    fn run(&mut self, c: Command, redirect: Option<String>) -> Result<ReadProcess, Error>;
 
     fn begin_remote(&mut self, c: Command) -> Result<RemoteId, Error>;
 
@@ -147,7 +151,7 @@ impl EndpointExt for BackendEndpoint {
         *self.handler.remotes.last().unwrap()
     }
 
-    fn run(&mut self, c: Command, redirect: Option<String>) -> Result<Process, Error> {
+    fn run(&mut self, c: Command, redirect: Option<String>) -> Result<ReadProcess, Error> {
         let cur_remote = self.cur_remote();
 
         if let Some(redirect) = redirect {

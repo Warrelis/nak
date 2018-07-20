@@ -45,7 +45,20 @@ use unix_socket::{UnixStream, UnixListener};
 
 use rand::{Rng, thread_rng};
 
-use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process, BackTraffic, Transport, Condition, ProcessId, ExitStatus};
+use protocol::{
+    Response,
+    Request,
+    Command,
+    WriteProcess,
+    ReadPipe,
+    WritePipe,
+    BackendHandler,
+    Transport,
+    Condition,
+    ProcessId,
+    ExitStatus,
+    Backend
+};
 
 use machine::{Machine, Task, Status};
 
@@ -84,9 +97,6 @@ impl Transport for StdoutTransport {
     }
 }
 
-struct ReadPipe(usize);
-struct WritePipe(usize);
-
 struct RunCmd {
     cmd: Command,
     stdin: ReadPipe,
@@ -101,19 +111,24 @@ enum ProcessState {
     AwaitingEdit,
 }
 
-pub struct Backend {
-    backtraffic: Arc<Mutex<BackTraffic<StdoutTransport>>>,
+enum RunResult {
+    Process(ProcessState),
+    AlreadyDone(ExitStatus),
+}
+
+pub struct AsyncBackendHandler {
+    backtraffic: Arc<Mutex<Backend<StdoutTransport>>>,
     running_commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
     waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>,
     subbackends: HashMap<usize, BackendRemote>,
-    open_files: HashMap<usize, File>,
+    open_files: HashMap<WritePipe, File>,
     machine: Machine<ProcessId, RunCmd, ProcessState>,
 }
 
-impl Backend {
-    fn new() -> Backend {
-        Backend {
-            backtraffic: Default::default(),
+impl AsyncBackendHandler {
+    fn new() -> AsyncBackendHandler {
+        AsyncBackendHandler {
+            backtraffic: Arc::new(Mutex::new(Backend::new(StdoutTransport))),
             running_commands: Default::default(),
             waiting_edits: Default::default(),
             subbackends: Default::default(),
@@ -130,8 +145,9 @@ impl Backend {
         for t in tasks {
             match t {
                 Task::Start(pid, cmd) => {
-                    match self.run(pid, cmd.stdout.0, cmd.stderr.0, cmd.cmd) {
-                        Ok(state) => self.machine.start(pid, state),
+                    match self.run(pid, cmd.stdout, cmd.stderr, cmd.cmd) {
+                        Ok(RunResult::Process(state)) => self.machine.start(pid, state),
+                        Ok(RunResult::AlreadyDone(status)) => self.machine.start_completed(pid, status),
                         Err(e) => errors.push(e),
                     }
                 }
@@ -151,7 +167,7 @@ impl Backend {
         }
     }
 
-    fn run(&mut self, id: ProcessId, stdout_pipe: usize, stderr_pipe: usize, c: Command) -> Result<ProcessState, Error> {
+    fn run(&mut self, id: ProcessId, stdout_pipe: WritePipe, stderr_pipe: WritePipe, c: Command) -> Result<RunResult, Error> {
         eprintln!("{:?} running {:?}", id, c);
         match c {
             Command::Unknown(path, args) => {
@@ -185,10 +201,7 @@ impl Backend {
 
                 let (cancel_send, cancel_recv) = mpsc::channel();
 
-                let running_commands = self.running_commands.clone();
-
                 let is_running = Arc::new(AtomicBool::new(true));
-
 
                 thread::spawn(move || {
                     cancel_recv.recv().unwrap();
@@ -248,6 +261,7 @@ impl Backend {
 
                 let is_running_clone = is_running.clone();
                 let backtraffic = self.backtraffic.clone();
+                let running_commands = self.running_commands.clone();
                 thread::spawn(move || {
                     let exit_code = cancel_handle.lock().unwrap().wait().unwrap().code().unwrap_or(-1);
                     eprintln!("{:?} exit {}", id, exit_code);
@@ -260,13 +274,12 @@ impl Backend {
                     stderr_thread.join().unwrap();
 
                     running_commands.lock().unwrap().remove(&command_key);
-
                     backtraffic.lock().unwrap().command_done(id, exit_code.into()).unwrap();
                 });
 
-                Ok(ProcessState::Running {
+                Ok(RunResult::Process(ProcessState::Running {
                     cancel: cancel_send,
-                })
+                }))
             }
             Command::SetDirectory(dir) => {
                 let mut back = self.backtraffic.lock().unwrap();
@@ -279,12 +292,13 @@ impl Backend {
                         back.command_done(id, 1);
                     }
                 }
-                panic!("fixup result");
+                Ok(RunResult::AlreadyDone(ExitStatus::Success))
             }
             Command::Edit(path) => {
                 let (sender, receiver) = mpsc::channel();
 
                 self.waiting_edits.lock().unwrap().insert(0, sender);
+
 
                 let mut contents = Vec::new();
                 match File::open(&path) {
@@ -309,7 +323,7 @@ impl Backend {
                     backtraffic.lock().unwrap().command_done(id, 0).unwrap();
                 });
 
-                panic!();
+                Ok(RunResult::Process(ProcessState::AwaitingEdit))
             }
         }
     }
@@ -348,7 +362,7 @@ impl Backend {
                                     break;
                                 }
 
-                                let mut rpc: Multiplex<RpcResponse> = serde_json::from_str(&input).unwrap();
+                                let mut rpc: Response = serde_json::from_str(&input).unwrap();
                                 rpc.remote_id = id;
 
                                 write!(io::stdout(), "{}\n", serde_json::to_string(&rpc).unwrap()).unwrap();
@@ -398,10 +412,62 @@ impl Backend {
         Ok(())
     }
 
-    fn open_file(&mut self, id: usize, path: String) -> Result<(), Error> {
+    fn open_file(&mut self, id: WritePipe, path: String) -> Result<(), Error> {
         self.open_files.insert(id, File::create(path)?);
         Ok(())
     }
+}
+
+impl BackendHandler for AsyncBackendHandler {
+    fn begin_command(&mut self, block_for: HashMap<ProcessId, Condition>, process: WriteProcess, command: Command) -> Result<(), Error> {
+        let cmd = RunCmd {
+            cmd: command,
+            stdin: process.stdin,
+            stdout: process.stdout,
+            stderr: process.stderr,
+        };
+        self.enqueue(process.id, cmd, block_for)?;
+        Ok(())
+    }
+
+    fn cancel_command(&mut self, id: ProcessId) -> Result<(), Error> {
+        self.cancel(id)
+    }
+
+    fn begin_remote(&mut self, id: usize, command: Command) -> Result<(), Error> {
+        self.begin_remote(id, command)
+    }
+
+    fn open_file(&mut self, id: WritePipe, path: String) -> Result<(), Error> {
+        self.open_file(id, path)
+    }
+
+    fn end_remote(&mut self, id: usize) -> Result<(), Error> {
+        self.end_remote(id)
+    }
+
+    fn list_directory(&mut self, id: usize, path: String) -> Result<(), Error> {
+        let items = fs::read_dir(path).unwrap().map(|i| {
+            i.unwrap().file_name().into_string().unwrap()
+        }).collect();
+
+        self.backtraffic.lock().unwrap().directory_listing(id, items)?;
+        Ok(())
+    }
+
+    fn finish_edit(&mut self, id: usize, data: Vec<u8>) -> Result<(), Error> {
+        self.waiting_edits.lock().unwrap().remove(&id).unwrap().send(data)?;
+        Ok(())
+    }
+
+    fn pipe_data(&mut self, _id: usize, _data: Vec<u8>) -> Result<(), Error> {
+        panic!();
+    }
+
+    fn pipe_read(&mut self, _id: usize, _count_bytes: usize) -> Result<(), Error> {
+        panic!();
+    }
+
 }
 
 fn random_key() -> String {
@@ -413,7 +479,7 @@ fn random_key() -> String {
 #[cfg(unix)]
 fn setup_editback_socket(
     socket_path: &str, 
-    backtraffic: Arc<Mutex<BackTraffic<StdoutTransport>>>,
+    backtraffic: Arc<Mutex<Backend<StdoutTransport>>>,
     running_commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
     waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>) -> Result<(), Error>
 {
@@ -480,7 +546,7 @@ fn setup_editback_socket(
 
 fn run_backend() -> Result<(), Error> {
 
-    let mut backend = Backend::new();
+    let mut backend = AsyncBackendHandler::new();
 
     // ctrlc::set_handler(move || {
     //     eprintln!("backend caught CtrlC");
@@ -512,46 +578,12 @@ fn run_backend() -> Result<(), Error> {
                 }
                 // eprintln!("part {}", input);
 
-                let rpc: Multiplex<RpcRequest> = serde_json::from_str(&input)?;
+                let rpc: Request = serde_json::from_str(&input)?;
 
                 if rpc.remote_id == 0 {
-                    match rpc.message {
-                        RpcRequest::BeginCommand { process: Process { id, stdout_pipe, stderr_pipe } , command, block_for } => {
-                            let cmd = RunCmd {
-                                cmd: command,
-                                stdin: ReadPipe(0),
-                                stdout: WritePipe(stdout_pipe),
-                                stderr: WritePipe(stderr_pipe),
-                            };
-                            backend.enqueue(id, cmd, block_for)?;
-                        }
-                        RpcRequest::BeginRemote { id, command } => {
-                            backend.begin_remote(id, command)?;
-                        }
-                        RpcRequest::OpenFile { id, path } => {
-                            backend.open_file(id, path)?;
-                        }
-                        RpcRequest::EndRemote { id } => {
-                            backend.end_remote(id)?;
-                        }
-                        RpcRequest::CancelCommand { id } => {
-                            // eprintln!("caught CtrlC");
-                            backend.cancel(id)?;
-                        }
-                        RpcRequest::ListDirectory { id, path } => {
-                            let items = fs::read_dir(path).unwrap().map(|i| {
-                                i.unwrap().file_name().into_string().unwrap()
-                            }).collect();
-
-
-                            backend.backtraffic.lock().unwrap().directory_listing(id, items)?;
-                        }
-                        RpcRequest::FinishEdit { id, data } => {
-                            backend.waiting_edits.lock().unwrap().remove(&id).unwrap().send(data)?;
-                        }
-                    }
+                    rpc.route(&mut backend).unwrap();
                 } else {
-                    let input = serde_json::to_string(&Multiplex {
+                    let input = serde_json::to_string(&Request {
                         remote_id: 0,
                         message: rpc.message,
                     }).unwrap();
