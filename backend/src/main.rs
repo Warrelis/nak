@@ -20,6 +20,7 @@ extern crate futures;
 extern crate tokio;
 extern crate nix;
 
+use std::sync::MutexGuard;
 use std::collections::HashMap;
 use std::io::{Write, Read, BufRead, BufReader, Seek, SeekFrom};
 use std::{io, env, fs, thread};
@@ -43,7 +44,7 @@ use unix_socket::{UnixStream, UnixListener};
 
 use rand::{Rng, thread_rng};
 
-use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process};
+use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process, BackTraffic, Transport};
 
 fn write_pipe(id: usize, data: Vec<u8>) -> Result<(), Error> {
     write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
@@ -119,7 +120,20 @@ pub struct CommandInfo {
 }
 
 #[derive(Default)]
+pub struct StdoutTransport;
+
+impl Transport for StdoutTransport {
+    fn send(&mut self, data: &[u8]) -> Result<(), Error> {
+        let mut stdout = io::stdout();
+        stdout.write(data)?;
+        stdout.flush()?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 pub struct Backend {
+    backtraffic: Arc<Mutex<BackTraffic<StdoutTransport>>>,
     running_commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
     waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>,
     subbackends: HashMap<usize, BackendRemote>,
@@ -167,6 +181,7 @@ impl Backend {
 
                 let is_running = Arc::new(AtomicBool::new(true));
 
+
                 thread::spawn(move || {
                     cancel_recv.recv().unwrap();
                     eprintln!("{} received cancel", id);
@@ -176,45 +191,69 @@ impl Backend {
                     eprintln!("{} finished cancel", id);
                 });
 
-                if do_forward {
+                let stdout_thread = if do_forward {
+                    let backtraffic = self.backtraffic.clone();
                     let is_running_clone = is_running.clone();
-                    thread::spawn(move || {
+                    let t = thread::spawn(move || {
                         let mut buf = [0u8; 1024];
 
                         loop {
                             let len = output_reader.read(&mut buf).unwrap();
                             eprintln!("{} read stdout {:?}", id, len);
                             if len == 0 {
-                                // assert!(!is_running_clone.load(Ordering::SeqCst));
-                                break;
+                                // I wonder if this could become an infinite loop... :(
+                                if !is_running_clone.load(Ordering::SeqCst) {
+                                    break;
+                                // } else {
+                                //     assert!(false, "stdout continued!")
+                                }
+                            } else {
+                                backtraffic.lock().unwrap().pipe(stdout_pipe, buf[..len].to_vec()).unwrap();
                             }
-                            write_pipe(stdout_pipe, buf[..len].to_vec()).unwrap();
                         }
                     });
-                }
+                    Some(t)
+                } else {
+                    None
+                };
 
                 let is_running_clone = is_running.clone();
-                thread::spawn(move || {
+                let backtraffic = self.backtraffic.clone();
+                let stderr_thread = thread::spawn(move || {
                     let mut buf = [0u8; 1024];
 
                     loop {
                         let len = error_reader.read(&mut buf).unwrap();
                         eprintln!("{} read stderr {:?}", id, len);
                         if len == 0 {
-                            // assert!(!is_running_clone.load(Ordering::SeqCst));
-                            break;
+                            if !is_running_clone.load(Ordering::SeqCst) {
+                                // I wonder if this could become an infinite loop... :(
+                                break;
+                            // } else {
+                            //     assert!(false, "stderr continued!")
+                            }
+                        } else {
+                            backtraffic.lock().unwrap().pipe(stderr_pipe, buf[..len].to_vec()).unwrap();
                         }
-                        write_pipe(stderr_pipe, buf[..len].to_vec()).unwrap();
                     }
                 });
 
+                let is_running_clone = is_running.clone();
+                let backtraffic = self.backtraffic.clone();
                 thread::spawn(move || {
                     let exit_code = cancel_handle.lock().unwrap().wait().unwrap().code().unwrap_or(-1);
                     eprintln!("{} exit {}", id, exit_code);
+                    is_running_clone.store(false, Ordering::SeqCst);
+
+                    if let Some(t) = stdout_thread {
+                        t.join().unwrap();
+                    }
+
+                    stderr_thread.join().unwrap();
 
                     running_commands.lock().unwrap().remove(&command_key);
 
-                    write_done(id, exit_code.into()).unwrap();
+                    backtraffic.lock().unwrap().command_done(id, exit_code.into()).unwrap();
                 });
 
                 Ok(())
@@ -223,8 +262,9 @@ impl Backend {
                 match env::set_current_dir(dir) {
                     Ok(_) => write_done(id, 0),
                     Err(e) => {
-                        write_pipe(stdout_pipe, format!("Error: {:?}", e).into_bytes())?;
-                        write_done(id, 1)
+                        let mut back = self.backtraffic.lock().unwrap();
+                        back.pipe(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
+                        back.command_done(id, 1)
                     }
                 }
             }
@@ -245,14 +285,15 @@ impl Backend {
                     }
                 }
 
-                write_edit_file_request(id, 0, path.clone(), contents).unwrap();
+                self.backtraffic.lock().unwrap().edit_request(id, 0, path.clone(), contents).unwrap();
 
+                let backtraffic = self.backtraffic.clone();
                 thread::spawn(move || {
                     let resp = receiver.recv().unwrap();
 
                     File::create(path).unwrap().write_all(&resp).unwrap();
 
-                    write_done(id, 0).unwrap();
+                    backtraffic.lock().unwrap().command_done(id, 0).unwrap();
                 });
 
                 Ok(())

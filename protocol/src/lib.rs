@@ -4,6 +4,7 @@ extern crate serde;
 extern crate serde_json;
 extern crate failure;
 
+use serde::Serialize;
 use std::collections::HashMap;
 
 use failure::Error;
@@ -135,7 +136,7 @@ pub struct Endpoint<T: Transport> {
     jobs: HashMap<usize, ProcessState>,
 }
 
-fn ser_to_endpoint(remote: RemoteId, message: RpcRequest) -> Vec<u8> {
+fn ser_to_endpoint(remote: RemoteId, message: impl Serialize) -> Vec<u8> {
     (serde_json::to_string(&Multiplex {
         remote_id: remote.0,
         message,
@@ -245,6 +246,57 @@ impl<T: Transport> Endpoint<T> {
 
         self.trans.send(&ser_to_endpoint(process_state.parent, RpcRequest::FinishEdit {
             id: edit_id,
+            data,
+        }))?;
+
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct BackTraffic<T: Transport> {
+    trans: T,
+}
+
+impl<T: Transport> BackTraffic<T> {
+    pub fn new(trans: T) -> BackTraffic<T> {
+        BackTraffic {
+            trans,
+        }
+    }
+
+    pub fn pipe(&mut self, id: usize, data: Vec<u8>) -> Result<(), Error> {
+        self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::Pipe {
+            id,
+            data,
+        }))?;
+
+        Ok(())
+    }
+
+    pub fn command_done(&mut self, id: usize, exit_code: i64) -> Result<(), Error> {
+        self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::CommandDone {
+            id,
+            exit_code,
+        }))?;
+
+        Ok(())
+    }
+
+    pub fn directory_listing(&mut self, id: usize, items: Vec<String>) -> Result<(), Error> {
+        self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::DirectoryListing {
+            id,
+            items,
+        }))?;
+
+        Ok(())
+    }
+
+    pub fn edit_request(&mut self, command_id: usize, edit_id: usize, name: String, data: Vec<u8>) -> Result<(), Error> {
+        self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::EditRequest {
+            command_id,
+            edit_id,
+            name,
             data,
         }))?;
 
