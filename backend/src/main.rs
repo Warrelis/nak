@@ -20,8 +20,9 @@ extern crate futures;
 extern crate tokio;
 extern crate nix;
 
-use std::hash::Hash;
-use std::collections::{HashMap, HashSet};
+mod machine;
+
+use std::collections::HashMap;
 use std::io::{Write, Read, BufRead, BufReader, Seek, SeekFrom};
 use std::{io, env, fs, thread};
 use std::fs::{File, OpenOptions};
@@ -45,6 +46,8 @@ use unix_socket::{UnixStream, UnixListener};
 use rand::{Rng, thread_rng};
 
 use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process, BackTraffic, Transport, Condition, ProcessId, ExitStatus};
+
+use machine::{Machine, Task, Status};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditRequest {
@@ -89,159 +92,6 @@ struct RunCmd {
     stdin: ReadPipe,
     stdout: WritePipe,
     stderr: WritePipe,
-}
-
-struct Waiting<Id: Eq+Hash, Cmd> {
-    cmd: Cmd,
-    conditions: HashMap<Id, Condition>,
-}
-
-struct Machine<Id: Eq+Hash+Copy+Clone, Cmd, State> {
-    finished: HashMap<Id, ExitStatus>,
-    to_run: HashSet<Id>,
-    running: HashMap<Id, State>,
-    check_on_completed: HashMap<Id, Vec<(Condition, Id)>>,
-    waiting_on: HashMap<Id, Waiting<Id, Cmd>>,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum Task<Id, Cmd> {
-    Start(Id, Cmd),
-    ConditionFailed(Id, Cmd),
-}
-
-impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
-    fn new() -> Machine<Id, Cmd, State> {
-        Machine {
-            finished: Default::default(),
-            to_run: Default::default(),
-            running: Default::default(),
-            check_on_completed: Default::default(),
-            waiting_on: Default::default(),
-        }
-    }
-
-    fn enqueue(&mut self, new_pid: Id, cmd: Cmd, block_for: HashMap<Id, Condition>) -> Option<Task<Id, Cmd>> {
-        assert!(
-            !self.finished.contains_key(&new_pid) &&
-            !self.to_run.contains(&new_pid) &&
-            !self.running.contains_key(&new_pid) &&
-            !self.waiting_on.contains_key(&new_pid));
-
-        let mut still_needs_to_block_for = HashMap::new();
-
-        for (existing_pid, cond) in block_for {
-            if let Some(&status) = self.finished.get(&existing_pid) {
-                match cond {
-                    Some(expected) => if expected != status {
-                        return Some(Task::ConditionFailed(new_pid, cmd));
-                    }
-                    None => {}
-                }
-            } else {
-                assert!(
-                    self.to_run.contains(&existing_pid) ||
-                    self.running.contains_key(&existing_pid) ||
-                    self.waiting_on.contains_key(&existing_pid));
-
-                still_needs_to_block_for.insert(existing_pid, cond);
-            }
-        }
-
-        if still_needs_to_block_for.len() == 0 {
-            self.to_run.insert(new_pid);
-            Some(Task::Start(new_pid, cmd))
-        } else {
-            for (&existing_pid, &cond) in &still_needs_to_block_for {
-                self.check_on_completed.entry(existing_pid).or_insert_with(Vec::new).push((cond, new_pid));
-            }
-            self.waiting_on.insert(new_pid, Waiting {
-                cmd,
-                conditions: still_needs_to_block_for
-            });
-            None
-        }
-    }
-
-    fn start(&mut self, pid: Id, state: State) {
-        assert!(self.to_run.remove(&pid));
-
-        self.running.insert(pid, state);
-    }
-
-    fn completed(&mut self, pid: Id, status: ExitStatus) -> Vec<Task<Id, Cmd>> {
-        let mut tasks = Vec::new();
-
-        assert!(self.running.contains_key(&pid));
-
-        self.running.remove(&pid);
-        self.finished.insert(pid, status);
-
-        if let Some(blocked) = self.check_on_completed.remove(&pid) {
-            for (cond, waiting_pid) in blocked {
-                let mut waiting = self.waiting_on.remove(&waiting_pid).expect("must be waiting");
-
-                match cond {
-                    Some(expected) if expected != status =>  {
-                        self.finished.insert(waiting_pid, ExitStatus::Failure);
-                        tasks.push(Task::ConditionFailed(waiting_pid, waiting.cmd));
-                        tasks.extend(self.completed(waiting_pid, ExitStatus::Failure));
-                    }
-                    _ => {
-                        let c2 = waiting.conditions.remove(&pid).expect("was waiting");
-                        assert_eq!(c2, cond);
-
-                        if waiting.conditions.len() == 0 {
-                            tasks.push(Task::Start(waiting_pid, waiting.cmd));
-                        } else {
-                            self.waiting_on.insert(waiting_pid, waiting);
-                        }
-                    }
-                }
-            }
-        }
-
-        tasks
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn wait(items: &[(usize, Option<ExitStatus>)]) -> HashMap<usize, Option<ExitStatus>> {
-        let mut res = HashMap::new();
-
-        for item in items {
-            res.insert(item.0, item.1);
-        }
-
-        res
-    }
-
-    #[test]
-    fn test_machine() {
-        let mut m = Machine::new();
-
-        assert_eq!(m.enqueue(0, "a", wait(&[])), Some(Task::Start(0, "a")));
-
-        use ExitStatus::*;
-
-        assert_eq!(m.enqueue(1, "b", wait(&[(0, None)])), None);
-        m.start(0, "waffle");
-        assert_eq!(m.completed(0, ExitStatus::Success), vec![Task::Start(1, "b")]);
-     
-        assert_eq!(m.enqueue(2, "c", wait(&[(0, None)])), Some(Task::Start(2, "c")));
-        assert_eq!(m.enqueue(3, "d", wait(&[(0, Some(Success))])), Some(Task::Start(3, "d")));
-        assert_eq!(m.enqueue(4, "e", wait(&[(0, Some(Failure))])), Some(Task::ConditionFailed(4, "e")));
-        assert_eq!(m.enqueue(5, "f", wait(&[(2, Some(Success)), (3, Some(Success))])), None);
-        assert_eq!(m.enqueue(6, "g", wait(&[(2, Some(Success))])), None);
-     
-        m.start(0, "badger");
-        assert_eq!(m.completed(2, ExitStatus::Success), vec![Task::Start(6, "g")]);
-        m.start(0, "anthill");
-        assert_eq!(m.completed(3, ExitStatus::Success), vec![Task::Start(5, "f")]);
-    }
 }
 
 enum ProcessState {
@@ -532,8 +382,8 @@ impl Backend {
     }
 
     fn cancel(&mut self, id: ProcessId) -> Result<(), Error> {
-        match self.machine.running.get(&id) {
-            Some(state) => {
+        match self.machine.status(id) {
+            Status::Running(state) => {
                 match state {
                     ProcessState::Running { cancel } => {
                         cancel.send(()).unwrap();
@@ -541,8 +391,7 @@ impl Backend {
                     _ => panic!(),
                 }
             }
-            None => {
-                self.machine.finished.get(&id).expect("finished");
+            Status::Exited(_) => {
                 // TODO: send back an "already exited" or something
             }
         }
@@ -785,11 +634,11 @@ struct CommandOutput {
     stderr: MyPipeReader,
 }
 
-enum Status {
-    Out(Vec<u8>),
-    Err(Vec<u8>),
-    Done(i32),
-}
+// enum Status {
+//     Out(Vec<u8>),
+//     Err(Vec<u8>),
+//     Done(i32),
+// }
 
 struct MyPipeReader(i32);
 struct MyPipeWriter(i32);
@@ -844,11 +693,11 @@ fn my_pipe() -> Result<(MyPipeReader, MyPipeWriter), Error> {
     ))
 }
 
-impl CommandOutput {
-    fn next_status(&mut self) -> Poll<Status, Error> {
-        panic!();
-    }
-}
+// impl CommandOutput {
+//     fn next_status(&mut self) -> Poll<Status, Error> {
+//         panic!();
+//     }
+// }
 
 fn start_py() -> Result<CommandOutput, Error> {
     let mut cmd = pr::Command::new("python3");
