@@ -139,31 +139,29 @@ impl AsyncBackendHandler {
     fn enqueue(&mut self, id: ProcessId, cmd: RunCmd, block_for: HashMap<ProcessId, Condition>) -> Result<(), Error> {
         let tasks = self.machine.enqueue(id, cmd, block_for);
 
-        let mut errors = Vec::new();
-
         for t in tasks {
             match t {
                 Task::Start(pid, cmd) => {
                     match self.run(pid, cmd.stdout, cmd.stderr, cmd.cmd) {
                         Ok(RunResult::Process(state)) => self.machine.start(pid, state),
                         Ok(RunResult::AlreadyDone(status)) => self.machine.start_completed(pid, status),
-                        Err(e) => errors.push(e),
+                        Err(e) => {
+                            self.machine.start_completed(pid, ExitStatus::Failure);
+
+                            let mut back = self.backtraffic.lock().unwrap();
+                            let text = format!("{:?}", e);
+                            back.pipe(cmd.stderr, text.into_bytes())?;
+                            back.command_done(pid, 1)?;
+                        }
                     }
                 }
-                Task::ConditionFailed(_pid, _cmd) => {
-                    // TODO: send failure back to app
-                    panic!();
+                Task::ConditionFailed(pid, _) => {
+                    self.backtraffic.lock().unwrap().command_done(pid, 1).unwrap();
                 }
             }
         }
 
-        if errors.len() == 0 {
-            Ok(())
-        } else if errors.len() == 1 {
-            Err(errors.into_iter().next().unwrap())
-        } else {
-            panic!();
-        }
+        Ok(())
     }
 
     fn run(&mut self, id: ProcessId, stdout_pipe: WritePipe, stderr_pipe: WritePipe, c: Command) -> Result<RunResult, Error> {
@@ -284,11 +282,11 @@ impl AsyncBackendHandler {
                 let mut back = self.backtraffic.lock().unwrap();
                 match env::set_current_dir(dir) {
                     Ok(_) => {
-                        back.command_done(id, 1);
+                        back.command_done(id, 1)?;
                     }
                     Err(e) => {
                         back.pipe(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
-                        back.command_done(id, 1);
+                        back.command_done(id, 1)?;
                     }
                 }
                 Ok(RunResult::AlreadyDone(ExitStatus::Success))
