@@ -50,7 +50,7 @@ def do(cmd, file):
 
 if 'linux' in vm or 'ubuntu' in vm:
     do(['sh', '-c', 'cat > nak-backend'], file)
-    assert b'6a71827d485c67d9a0a4e9ecd544c15bbf2cc1a8  nak-backend\n' == do(['sha1sum nak-backend'], b'')
+    assert b'ef7c0f50de0ef0f7892cb894f3bbd95de0a826e3  nak-backend\n' == do(['sha1sum nak-backend'], b'')
     do(['chmod', '+x', 'nak-backend'], b'')
     do(['chmod', '+x', 'nak-backend'], b'')
 

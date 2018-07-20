@@ -570,7 +570,7 @@ fn run_backend() -> Result<(), Error> {
 
     let hostname = hostname::get_hostname().unwrap();
     let username = String::from("dummyuser");
-    let working_dir = String::from("/working/dir");
+    let working_dir = env::current_dir().unwrap().to_str().unwrap().to_string();
 
     backend.backtraffic.lock().unwrap().remote_ready(RemoteInfo {
         hostname,
