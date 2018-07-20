@@ -15,7 +15,7 @@ use libc;
 use serde_json;
 use tempfile::tempdir;
 
-use protocol::{ RpcResponse, Process, Multiplex, Command, Transport, Endpoint, RemoteId, EndpointHandler };
+use protocol::{ RpcResponse, Process, Multiplex, Command, Transport, Endpoint, RemoteId, EndpointHandler, ProcessId };
 
 use Event;
 
@@ -41,7 +41,7 @@ impl<T: Transport> EndpointHandler<T> for StackedRemotes {
         Ok(io::stdout().write_all(&data)?)
     }
 
-    fn command_done(endpoint: &mut Endpoint<T, Self>, id: usize, _exit_code: i64) -> Result<(), Error> {
+    fn command_done(endpoint: &mut Endpoint<T, Self>, id: ProcessId, _exit_code: i64) -> Result<(), Error> {
         assert_eq!(endpoint.handler.waiting_for.expect("no process waiting").id, id);
         endpoint.handler.waiting_for = None;
         Ok(())
@@ -51,7 +51,7 @@ impl<T: Transport> EndpointHandler<T> for StackedRemotes {
         panic!();
     }
 
-    fn edit_request(endpoint: &mut Endpoint<T, Self>, edit_id: usize, command_id: usize, name: String, data: Vec<u8>) -> Result<(), Error> {
+    fn edit_request(endpoint: &mut Endpoint<T, Self>, edit_id: usize, command_id: ProcessId, name: String, data: Vec<u8>) -> Result<(), Error> {
         println!("editing {}", name);
         io::stdout().write(&data)?;
 
@@ -136,9 +136,9 @@ pub trait EndpointExt {
 
     fn end_remote(&mut self) -> Result<(), Error>;
 
-    fn finish_edit(&mut self, command_id: usize, edit_id: usize, data: Vec<u8>) -> Result<(), Error>;
+    fn finish_edit(&mut self, command_id: ProcessId, edit_id: usize, data: Vec<u8>) -> Result<(), Error>;
 
-    fn cancel(&mut self, id: usize) -> Result<(), Error>;
+    fn cancel(&mut self, id: ProcessId) -> Result<(), Error>;
 }
 
 
@@ -171,12 +171,12 @@ impl EndpointExt for BackendEndpoint {
         Ok(self.close_remote(cur_remote)?)
     }
 
-    fn finish_edit(&mut self, command_id: usize, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
+    fn finish_edit(&mut self, command_id: ProcessId, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
         // let cur_remote = self.remotes.pop().unwrap();
         Ok(self.finish_edit(command_id, edit_id, data)?)
     }
 
-    fn cancel(&mut self, id: usize) -> Result<(), Error> {
+    fn cancel(&mut self, id: ProcessId) -> Result<(), Error> {
         Ok(self.close_process(id)?)
     }
 }

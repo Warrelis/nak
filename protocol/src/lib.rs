@@ -47,7 +47,7 @@ pub type Condition = Option<ExitStatus>;
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Process {
-    pub id: usize,
+    pub id: ProcessId,
     pub stdout_pipe: usize,
     pub stderr_pipe: usize,
 }
@@ -60,7 +60,7 @@ pub enum RpcRequest {
         command: Command,
     },
     CancelCommand {
-        id: usize,
+        id: ProcessId,
     },
     BeginRemote {
         id: usize,
@@ -94,7 +94,7 @@ pub enum RpcResponse {
         data: Vec<u8>,
     },
     CommandDone {
-        id: usize,
+        id: ProcessId,
         exit_code: i64,
     },
     DirectoryListing {
@@ -102,7 +102,7 @@ pub enum RpcResponse {
         items: Vec<String>,
     },
     EditRequest {
-        command_id: usize,
+        command_id: ProcessId,
         edit_id: usize,
         name: String,
         data: Vec<u8>,
@@ -142,9 +142,9 @@ struct ProcessState {
 
 pub trait EndpointHandler<T: Transport>: Sized {
     fn pipe(endpoint: &mut Endpoint<T, Self>, id: usize, data: Vec<u8>) -> Result<(), Error>;
-    fn command_done(endpoint: &mut Endpoint<T, Self>, id: usize, exit_code: i64) -> Result<(), Error>;
+    fn command_done(endpoint: &mut Endpoint<T, Self>, id: ProcessId, exit_code: i64) -> Result<(), Error>;
     fn directory_listing(endpoint: &mut Endpoint<T, Self>, id: usize, items: Vec<String>) -> Result<(), Error>;
-    fn edit_request(endpoint: &mut Endpoint<T, Self>, edit_id: usize, command_id: usize, name: String, data: Vec<u8>) -> Result<(), Error>;
+    fn edit_request(endpoint: &mut Endpoint<T, Self>, edit_id: usize, command_id: ProcessId, name: String, data: Vec<u8>) -> Result<(), Error>;
 }
 
 pub struct Endpoint<T: Transport, H: EndpointHandler<T>> {
@@ -152,7 +152,7 @@ pub struct Endpoint<T: Transport, H: EndpointHandler<T>> {
     pub handler: H,
     ids: Ids,
     remotes: HashMap<RemoteId, RemoteState>,
-    jobs: HashMap<usize, ProcessState>,
+    jobs: HashMap<ProcessId, ProcessState>,
     pipes: HashSet<usize>,
 }
 
@@ -222,7 +222,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
     pub fn command(&mut self, remote: RemoteId, command: Command, block_for: HashMap<ProcessId, Condition>, redirect: Option<Handle>) -> Result<Process, Error> {
         assert!(self.remotes.contains_key(&remote));
 
-        let id = self.ids.next_id();
+        let id = ProcessId(self.ids.next_id());
         let stdout_pipe = match redirect {
             Some(h) => {
                 assert!(self.pipes.remove(&h.0));
@@ -282,7 +282,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         Ok(())
     }
 
-    pub fn close_process(&mut self, id: usize) -> Result<(), Error> {
+    pub fn close_process(&mut self, id: ProcessId) -> Result<(), Error> {
         let process_state = self.jobs.remove(&id).expect("process not running");
 
         assert!(self.remotes.contains_key(&process_state.parent));
@@ -294,7 +294,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         Ok(())
     }
 
-    pub fn finish_edit(&mut self, command_id: usize, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
+    pub fn finish_edit(&mut self, command_id: ProcessId, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
         let process_state = self.jobs.get(&command_id).expect("process not running");
 
         assert!(self.remotes.contains_key(&process_state.parent));
@@ -329,7 +329,7 @@ impl<T: Transport> BackTraffic<T> {
         Ok(())
     }
 
-    pub fn command_done(&mut self, id: usize, exit_code: i64) -> Result<(), Error> {
+    pub fn command_done(&mut self, id: ProcessId, exit_code: i64) -> Result<(), Error> {
         self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::CommandDone {
             id,
             exit_code,
@@ -347,7 +347,7 @@ impl<T: Transport> BackTraffic<T> {
         Ok(())
     }
 
-    pub fn edit_request(&mut self, command_id: usize, edit_id: usize, name: String, data: Vec<u8>) -> Result<(), Error> {
+    pub fn edit_request(&mut self, command_id: ProcessId, edit_id: usize, name: String, data: Vec<u8>) -> Result<(), Error> {
         self.trans.send(&ser_to_endpoint(RemoteId(0), RpcResponse::EditRequest {
             command_id,
             edit_id,

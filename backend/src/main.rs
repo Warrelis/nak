@@ -66,7 +66,7 @@ pub struct BackendRemote {
 #[derive(Clone)]
 pub struct CommandInfo {
     remote_id: usize,
-    id: usize,
+    id: ProcessId,
 }
 
 #[derive(Default)]
@@ -86,9 +86,9 @@ struct WritePipe(usize);
 
 struct RunCmd {
     cmd: Command,
-    stdin_pipe: ReadPipe,
-    stdout_pipe: WritePipe,
-    stderr_pipe: WritePipe,
+    stdin: ReadPipe,
+    stdout: WritePipe,
+    stderr: WritePipe,
 }
 
 struct Waiting<Id: Eq+Hash, Cmd> {
@@ -96,10 +96,10 @@ struct Waiting<Id: Eq+Hash, Cmd> {
     conditions: HashMap<Id, Condition>,
 }
 
-#[derive(Default)]
-struct Machine<Id: Eq+Hash+Copy+Clone, Cmd> {
+struct Machine<Id: Eq+Hash+Copy+Clone, Cmd, State> {
     finished: HashMap<Id, ExitStatus>,
-    running: HashSet<Id>,
+    to_run: HashSet<Id>,
+    running: HashMap<Id, State>,
     check_on_completed: HashMap<Id, Vec<(Condition, Id)>>,
     waiting_on: HashMap<Id, Waiting<Id, Cmd>>,
 }
@@ -110,11 +110,22 @@ enum Task<Id, Cmd> {
     ConditionFailed(Id, Cmd),
 }
 
-impl<Id: Eq+Hash+Copy+Clone, Cmd> Machine<Id, Cmd> {
+impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
+    fn new() -> Machine<Id, Cmd, State> {
+        Machine {
+            finished: Default::default(),
+            to_run: Default::default(),
+            running: Default::default(),
+            check_on_completed: Default::default(),
+            waiting_on: Default::default(),
+        }
+    }
+
     fn enqueue(&mut self, new_pid: Id, cmd: Cmd, block_for: HashMap<Id, Condition>) -> Option<Task<Id, Cmd>> {
         assert!(
             !self.finished.contains_key(&new_pid) &&
-            !self.running.contains(&new_pid) &&
+            !self.to_run.contains(&new_pid) &&
+            !self.running.contains_key(&new_pid) &&
             !self.waiting_on.contains_key(&new_pid));
 
         let mut still_needs_to_block_for = HashMap::new();
@@ -129,7 +140,8 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd> Machine<Id, Cmd> {
                 }
             } else {
                 assert!(
-                    self.running.contains(&existing_pid) ||
+                    self.to_run.contains(&existing_pid) ||
+                    self.running.contains_key(&existing_pid) ||
                     self.waiting_on.contains_key(&existing_pid));
 
                 still_needs_to_block_for.insert(existing_pid, cond);
@@ -137,7 +149,7 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd> Machine<Id, Cmd> {
         }
 
         if still_needs_to_block_for.len() == 0 {
-            self.running.insert(new_pid);
+            self.to_run.insert(new_pid);
             Some(Task::Start(new_pid, cmd))
         } else {
             for (&existing_pid, &cond) in &still_needs_to_block_for {
@@ -151,10 +163,16 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd> Machine<Id, Cmd> {
         }
     }
 
+    fn start(&mut self, pid: Id, state: State) {
+        assert!(self.to_run.remove(&pid));
+
+        self.running.insert(pid, state);
+    }
+
     fn completed(&mut self, pid: Id, status: ExitStatus) -> Vec<Task<Id, Cmd>> {
         let mut tasks = Vec::new();
 
-        assert!(self.running.contains(&pid));
+        assert!(self.running.contains_key(&pid));
 
         self.running.remove(&pid);
         self.finished.insert(pid, status);
@@ -203,13 +221,14 @@ mod tests {
 
     #[test]
     fn test_machine() {
-        let mut m = Machine::default();
+        let mut m = Machine::new();
 
         assert_eq!(m.enqueue(0, "a", wait(&[])), Some(Task::Start(0, "a")));
 
         use ExitStatus::*;
 
         assert_eq!(m.enqueue(1, "b", wait(&[(0, None)])), None);
+        m.start(0, "waffle");
         assert_eq!(m.completed(0, ExitStatus::Success), vec![Task::Start(1, "b")]);
      
         assert_eq!(m.enqueue(2, "c", wait(&[(0, None)])), Some(Task::Start(2, "c")));
@@ -218,24 +237,72 @@ mod tests {
         assert_eq!(m.enqueue(5, "f", wait(&[(2, Some(Success)), (3, Some(Success))])), None);
         assert_eq!(m.enqueue(6, "g", wait(&[(2, Some(Success))])), None);
      
+        m.start(0, "badger");
         assert_eq!(m.completed(2, ExitStatus::Success), vec![Task::Start(6, "g")]);
+        m.start(0, "anthill");
         assert_eq!(m.completed(3, ExitStatus::Success), vec![Task::Start(5, "f")]);
     }
 }
 
-#[derive(Default)]
+enum ProcessState {
+    Running {
+        cancel: mpsc::Sender<()>,
+    },
+    AwaitingEdit,
+}
+
 pub struct Backend {
     backtraffic: Arc<Mutex<BackTraffic<StdoutTransport>>>,
     running_commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
     waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>,
     subbackends: HashMap<usize, BackendRemote>,
-    jobs: HashMap<usize, mpsc::Sender<()>>,
     open_files: HashMap<usize, File>,
+    machine: Machine<ProcessId, RunCmd, ProcessState>,
 }
 
 impl Backend {
-    fn run(&mut self, id: usize, stdout_pipe: usize, stderr_pipe: usize, c: Command, block_for: HashMap<ProcessId, Condition>) -> Result<(), Error> {
-        eprintln!("{} running {:?}", id, c);
+    fn new() -> Backend {
+        Backend {
+            backtraffic: Default::default(),
+            running_commands: Default::default(),
+            waiting_edits: Default::default(),
+            subbackends: Default::default(),
+            open_files: Default::default(),
+            machine: Machine::new(),
+        }
+    }
+
+    fn enqueue(&mut self, id: ProcessId, cmd: RunCmd, block_for: HashMap<ProcessId, Condition>) -> Result<(), Error> {
+        let tasks = self.machine.enqueue(id, cmd, block_for);
+
+        let mut errors = Vec::new();
+
+        for t in tasks {
+            match t {
+                Task::Start(pid, cmd) => {
+                    match self.run(pid, cmd.stdout.0, cmd.stderr.0, cmd.cmd) {
+                        Ok(state) => self.machine.start(pid, state),
+                        Err(e) => errors.push(e),
+                    }
+                }
+                Task::ConditionFailed(_pid, _cmd) => {
+                    // TODO: send failure back to app
+                    panic!();
+                }
+            }
+        }
+
+        if errors.len() == 0 {
+            Ok(())
+        } else if errors.len() == 1 {
+            Err(errors.into_iter().next().unwrap())
+        } else {
+            panic!();
+        }
+    }
+
+    fn run(&mut self, id: ProcessId, stdout_pipe: usize, stderr_pipe: usize, c: Command) -> Result<ProcessState, Error> {
+        eprintln!("{:?} running {:?}", id, c);
         match c {
             Command::Unknown(path, args) => {
                 let mut cmd = pr::Command::new(path);
@@ -268,7 +335,6 @@ impl Backend {
 
                 let (cancel_send, cancel_recv) = mpsc::channel();
 
-                self.jobs.insert(id, cancel_send);
                 let running_commands = self.running_commands.clone();
 
                 let is_running = Arc::new(AtomicBool::new(true));
@@ -276,11 +342,11 @@ impl Backend {
 
                 thread::spawn(move || {
                     cancel_recv.recv().unwrap();
-                    eprintln!("{} received cancel", id);
+                    eprintln!("{:?} received cancel", id);
 
                     handle.lock().unwrap().kill().unwrap();
 
-                    eprintln!("{} finished cancel", id);
+                    eprintln!("{:?} finished cancel", id);
                 });
 
                 let stdout_thread = if do_forward {
@@ -291,7 +357,7 @@ impl Backend {
 
                         loop {
                             let len = output_reader.read(&mut buf).unwrap();
-                            eprintln!("{} read stdout {:?}", id, len);
+                            eprintln!("{:?} read stdout {:?}", id, len);
                             if len == 0 {
                                 // I wonder if this could become an infinite loop... :(
                                 if !is_running_clone.load(Ordering::SeqCst) {
@@ -316,7 +382,7 @@ impl Backend {
 
                     loop {
                         let len = error_reader.read(&mut buf).unwrap();
-                        eprintln!("{} read stderr {:?}", id, len);
+                        eprintln!("{:?} read stderr {:?}", id, len);
                         if len == 0 {
                             if !is_running_clone.load(Ordering::SeqCst) {
                                 // I wonder if this could become an infinite loop... :(
@@ -334,7 +400,7 @@ impl Backend {
                 let backtraffic = self.backtraffic.clone();
                 thread::spawn(move || {
                     let exit_code = cancel_handle.lock().unwrap().wait().unwrap().code().unwrap_or(-1);
-                    eprintln!("{} exit {}", id, exit_code);
+                    eprintln!("{:?} exit {}", id, exit_code);
                     is_running_clone.store(false, Ordering::SeqCst);
 
                     if let Some(t) = stdout_thread {
@@ -348,17 +414,22 @@ impl Backend {
                     backtraffic.lock().unwrap().command_done(id, exit_code.into()).unwrap();
                 });
 
-                Ok(())
+                Ok(ProcessState::Running {
+                    cancel: cancel_send,
+                })
             }
             Command::SetDirectory(dir) => {
                 let mut back = self.backtraffic.lock().unwrap();
                 match env::set_current_dir(dir) {
-                    Ok(_) => back.command_done(id, 1),
+                    Ok(_) => {
+                        back.command_done(id, 1);
+                    }
                     Err(e) => {
                         back.pipe(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
-                        back.command_done(id, 1)
+                        back.command_done(id, 1);
                     }
                 }
+                panic!("fixup result");
             }
             Command::Edit(path) => {
                 let (sender, receiver) = mpsc::channel();
@@ -388,7 +459,7 @@ impl Backend {
                     backtraffic.lock().unwrap().command_done(id, 0).unwrap();
                 });
 
-                Ok(())
+                panic!();
             }
         }
     }
@@ -460,8 +531,21 @@ impl Backend {
         Ok(())
     }
 
-    fn cancel(&mut self, id: usize) -> Result<(), Error> {
-        self.jobs.get(&id).unwrap().send(())?;
+    fn cancel(&mut self, id: ProcessId) -> Result<(), Error> {
+        match self.machine.running.get(&id) {
+            Some(state) => {
+                match state {
+                    ProcessState::Running { cancel } => {
+                        cancel.send(()).unwrap();
+                    }
+                    _ => panic!(),
+                }
+            }
+            None => {
+                self.machine.finished.get(&id).expect("finished");
+                // TODO: send back an "already exited" or something
+            }
+        }
         Ok(())
     }
 
@@ -547,7 +631,7 @@ fn setup_editback_socket(
 
 fn run_backend() -> Result<(), Error> {
 
-    let mut backend = Backend::default();
+    let mut backend = Backend::new();
 
     // ctrlc::set_handler(move || {
     //     eprintln!("backend caught CtrlC");
@@ -584,7 +668,13 @@ fn run_backend() -> Result<(), Error> {
                 if rpc.remote_id == 0 {
                     match rpc.message {
                         RpcRequest::BeginCommand { process: Process { id, stdout_pipe, stderr_pipe } , command, block_for } => {
-                            backend.run(id, stdout_pipe, stderr_pipe, command, block_for)?;
+                            let cmd = RunCmd {
+                                cmd: command,
+                                stdin: ReadPipe(0),
+                                stdout: WritePipe(stdout_pipe),
+                                stderr: WritePipe(stderr_pipe),
+                            };
+                            backend.enqueue(id, cmd, block_for)?;
                         }
                         RpcRequest::BeginRemote { id, command } => {
                             backend.begin_remote(id, command)?;
