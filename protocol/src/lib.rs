@@ -5,7 +5,7 @@ extern crate serde_json;
 extern crate failure;
 
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use failure::Error;
 
@@ -142,6 +142,7 @@ pub struct Endpoint<T: Transport, H: EndpointHandler<T>> {
     ids: Ids,
     remotes: HashMap<RemoteId, RemoteState>,
     jobs: HashMap<usize, ProcessState>,
+    pipes: HashSet<usize>,
 }
 
 fn ser_to_endpoint(remote: RemoteId, message: impl Serialize) -> Vec<u8> {
@@ -162,6 +163,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
             ids: Ids { next_id: 1 },
             remotes,
             jobs: HashMap::new(),
+            pipes: HashSet::new(),
         }
     }
 
@@ -172,6 +174,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
     pub fn receive(&mut self, message: Multiplex<RpcResponse>) -> Result<(), Error> {
         match message.message {
             RpcResponse::Pipe { id, data } => {
+                assert!(self.pipes.contains(&id));
                 EndpointHandler::pipe(self, id, data)
             }
             RpcResponse::CommandDone { id, exit_code } => {
@@ -209,8 +212,20 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         assert!(self.remotes.contains_key(&remote));
 
         let id = self.ids.next_id();
-        let stdout_pipe = redirect.map(|h| h.0).unwrap_or_else(|| self.ids.next_id());
+        let stdout_pipe = match redirect {
+            Some(h) => {
+                assert!(self.pipes.remove(&h.0));
+                h.0
+            }
+            None => {
+                let id = self.ids.next_id();
+                self.pipes.insert(id);
+                id
+            }
+        };
         let stderr_pipe = self.ids.next_id();
+
+        self.pipes.insert(stderr_pipe);
 
         let process = Process {
             id,
@@ -232,6 +247,8 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         assert!(self.remotes.contains_key(&remote));
 
         let id = self.ids.next_id();
+
+        self.pipes.insert(id);
 
         self.trans.send(&ser_to_endpoint(remote, RpcRequest::OpenFile {
             id,
