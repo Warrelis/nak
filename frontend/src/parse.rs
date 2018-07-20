@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::borrow::Borrow;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NodeType {
@@ -8,13 +7,12 @@ pub enum NodeType {
     Word,
     Quote,
     Command,
-    Sequence,
-    If,
-    While,
-    For,
+    // Sequence,
+    // If,
+    // While,
+    // For,
     Redirect,
     RedirectSymbol,
-    RedirectFile,
 }
 
 pub struct Node {

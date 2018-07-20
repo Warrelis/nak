@@ -1,11 +1,10 @@
-use std::borrow::Cow;
 use prefs::Prefs;
 use Shell;
 use protocol::Command;
 use std::io::Write;
 use failure::Error;
 use parse::Parser;
-use comm::BackendRemote;
+use comm::BackendEndpoint;
 use liner;
 use std::env;
 use std::io;
@@ -18,7 +17,7 @@ use std::io::stdout;
 
 
 pub trait Reader {
-    fn get_command(&mut self, backend: &BackendRemote) -> Result<Shell, Error>;
+    fn get_command(&mut self, backend: &BackendEndpoint) -> Result<Shell, Error>;
     fn save_history(&mut self);
 }
 
@@ -109,7 +108,7 @@ impl SimpleReader {
 }
 
 impl Reader for SimpleReader {
-    fn get_command(&mut self, backend: &BackendRemote) -> Result<Shell, Error> {
+    fn get_command(&mut self, backend: &BackendEndpoint) -> Result<Shell, Error> {
 
         fn handle_keys<'a, T, W: Write, M: KeyMap<'a, W, T>>(
             mut keymap: M,
@@ -128,7 +127,7 @@ impl Reader for SimpleReader {
             Ok(keymap.into())
         }
 
-        let prompt = format!("[{}]$ ", backend.remotes.len());
+        let prompt = format!("[{}]$ ", backend.handler.remotes.len());
 
         let buffer = Buffer::new();
 

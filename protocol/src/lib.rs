@@ -129,8 +129,16 @@ struct ProcessState {
     process: Process,
 }
 
-pub struct Endpoint<T: Transport> {
-    trans: T,
+pub trait EndpointHandler<T: Transport>: Sized {
+    fn pipe(endpoint: &mut Endpoint<T, Self>, id: usize, data: Vec<u8>) -> Result<(), Error>;
+    fn command_done(endpoint: &mut Endpoint<T, Self>, id: usize, exit_code: i64) -> Result<(), Error>;
+    fn directory_listing(endpoint: &mut Endpoint<T, Self>, id: usize, items: Vec<String>) -> Result<(), Error>;
+    fn edit_request(endpoint: &mut Endpoint<T, Self>, edit_id: usize, command_id: usize, name: String, data: Vec<u8>) -> Result<(), Error>;
+}
+
+pub struct Endpoint<T: Transport, H: EndpointHandler<T>> {
+    pub trans: T,
+    pub handler: H,
     ids: Ids,
     remotes: HashMap<RemoteId, RemoteState>,
     jobs: HashMap<usize, ProcessState>,
@@ -143,13 +151,14 @@ fn ser_to_endpoint(remote: RemoteId, message: impl Serialize) -> Vec<u8> {
     }).unwrap() + "\n").into_bytes()
 }
 
-impl<T: Transport> Endpoint<T> {
-    pub fn new(trans: T) -> Endpoint<T> {
+impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
+    pub fn new(trans: T, handler: H) -> Endpoint<T, H> {
         let mut remotes = HashMap::new();
         remotes.insert(RemoteId(0), RemoteState { parent: None });
 
         Endpoint {
             trans,
+            handler,
             ids: Ids { next_id: 1 },
             remotes,
             jobs: HashMap::new(),
@@ -158,6 +167,23 @@ impl<T: Transport> Endpoint<T> {
 
     pub fn root(&self) -> RemoteId {
        RemoteId(0)
+    }
+
+    pub fn receive(&mut self, message: Multiplex<RpcResponse>) -> Result<(), Error> {
+        match message.message {
+            RpcResponse::Pipe { id, data } => {
+                EndpointHandler::pipe(self, id, data)
+            }
+            RpcResponse::CommandDone { id, exit_code } => {
+                EndpointHandler::command_done(self, id, exit_code)
+            }
+            RpcResponse::DirectoryListing { id, items } => {
+                EndpointHandler::directory_listing(self, id, items)
+            }
+            RpcResponse::EditRequest { edit_id, command_id, name, data } => {
+                EndpointHandler::edit_request(self, edit_id, command_id, name, data)
+            }
+        }
     }
 
     pub fn remote(&mut self, remote: RemoteId, command: Command) -> Result<RemoteId, Error> {

@@ -3,19 +3,22 @@ use std::sync::mpsc;
 use std::process as pr;
 use std::thread;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write, Read};
+use std::io;
 
 use failure::Error;
 use os_pipe::{PipeWriter, IntoStdio};
 use os_pipe;
 use libc;
 use serde_json;
+use tempfile::tempdir;
 
-use protocol::{ RpcResponse, Process, Multiplex, Command, Transport, Endpoint, RemoteId };
+use protocol::{ RpcResponse, Process, Multiplex, Command, Transport, Endpoint, RemoteId, EndpointHandler };
 
 use Event;
 
-struct PipeTransport {
+pub struct PipeTransport {
     input: PipeWriter,
 }
 
@@ -25,15 +28,52 @@ impl Transport for PipeTransport {
         self.input.flush()?;
         Ok(())
     }
-
 }
 
-pub struct BackendRemote {
-    endpoint: Endpoint<PipeTransport>,
+pub struct StackedRemotes {
     pub remotes: Vec<RemoteId>,
+    pub waiting_for: Option<Process>,
 }
 
-pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Error> {
+impl<T: Transport> EndpointHandler<T> for StackedRemotes {
+    fn pipe(_endpoint: &mut Endpoint<T, Self>, _id: usize, data: Vec<u8>) -> Result<(), Error> {
+        Ok(io::stdout().write_all(&data)?)
+    }
+
+    fn command_done(endpoint: &mut Endpoint<T, Self>, id: usize, _exit_code: i64) -> Result<(), Error> {
+        assert_eq!(endpoint.handler.waiting_for.expect("no process waiting").id, id);
+        endpoint.handler.waiting_for = None;
+        Ok(())
+    }
+
+    fn directory_listing(_endpoint: &mut Endpoint<T, Self>, _id: usize, _items: Vec<String>) -> Result<(), Error> {
+        panic!();
+    }
+
+    fn edit_request(endpoint: &mut Endpoint<T, Self>, edit_id: usize, command_id: usize, name: String, data: Vec<u8>) -> Result<(), Error> {
+        println!("editing {}", name);
+        io::stdout().write(&data)?;
+
+        let name = &name[name.rfind("/").map(|x| x+1).unwrap_or(0)..];
+
+        let dir = tempdir()?;
+        let path = dir.path().join(name);
+        File::create(&path)?.write_all(&data)?;
+
+        let res = pr::Command::new("micro").arg(path.to_str().unwrap()).status()?;
+        assert!(res.success());
+
+        let mut new_data = Vec::new();
+        File::open(path)?.read_to_end(&mut new_data)?;
+
+        endpoint.finish_edit(command_id, edit_id, new_data)?;
+        Ok(())
+    }
+}
+
+pub type BackendEndpoint = Endpoint<PipeTransport, StackedRemotes>;
+
+pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendEndpoint, Error> {
 
     let (output_reader, output_writer) = os_pipe::pipe()?;
     let (input_reader, input_writer) = os_pipe::pipe()?;
@@ -53,7 +93,12 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Erro
         unsafe { libc::exit(0) };
     }
 
-    let endpoint = Endpoint::new(PipeTransport { input: input_writer });
+    let mut endpoint = Endpoint::new(
+        PipeTransport { input: input_writer },
+        StackedRemotes { remotes: vec![], waiting_for: None });
+
+    let root = endpoint.root();
+    endpoint.handler.remotes.push(root);
 
     let mut output = BufReader::new(output_reader);
 
@@ -78,49 +123,59 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendRemote, Erro
         }
     });
 
-    let root = endpoint.root();
-
-    Ok(BackendRemote {
-        endpoint,
-        remotes: vec![root],
-    })
+    Ok(endpoint)
 }
 
-impl BackendRemote {
-    pub fn cur_remote(&self) -> RemoteId {
-        *self.remotes.last().unwrap()
+pub trait EndpointExt {
+    fn cur_remote(&self) -> RemoteId;
+
+    fn run(&mut self, c: Command, redirect: Option<String>) -> Result<Process, Error>;
+
+    fn begin_remote(&mut self, c: Command) -> Result<RemoteId, Error>;
+
+    fn end_remote(&mut self) -> Result<(), Error>;
+
+    fn finish_edit(&mut self, command_id: usize, edit_id: usize, data: Vec<u8>) -> Result<(), Error>;
+
+    fn cancel(&mut self, id: usize) -> Result<(), Error>;
+}
+
+
+impl EndpointExt for BackendEndpoint {
+    fn cur_remote(&self) -> RemoteId {
+        *self.handler.remotes.last().unwrap()
     }
 
-    pub fn run(&mut self, c: Command, redirect: Option<String>) -> Result<Process, Error> {
+    fn run(&mut self, c: Command, redirect: Option<String>) -> Result<Process, Error> {
         let cur_remote = self.cur_remote();
 
         if let Some(redirect) = redirect {
-            let handle = self.endpoint.open_file(cur_remote, redirect)?;
-            Ok(self.endpoint.command(cur_remote, c, Some(handle))?)
+            let handle = self.open_file(cur_remote, redirect)?;
+            Ok(self.command(cur_remote, c, Some(handle))?)
 
         } else {
-            Ok(self.endpoint.command(cur_remote, c, None)?)
+            Ok(self.command(cur_remote, c, None)?)
         }
     }
 
-    pub fn begin_remote(&mut self, c: Command) -> Result<RemoteId, Error> {
+    fn begin_remote(&mut self, c: Command) -> Result<RemoteId, Error> {
         let cur_remote = self.cur_remote();
-        let remote = self.endpoint.remote(cur_remote, c)?;
-        self.remotes.push(remote);
+        let remote = self.remote(cur_remote, c)?;
+        self.handler.remotes.push(remote);
         Ok(remote)
     }
 
-    pub fn end_remote(&mut self) -> Result<(), Error> {
-        let cur_remote = self.remotes.pop().unwrap();
-        Ok(self.endpoint.close_remote(cur_remote)?)
+    fn end_remote(&mut self) -> Result<(), Error> {
+        let cur_remote = self.handler.remotes.pop().unwrap();
+        Ok(self.close_remote(cur_remote)?)
     }
 
-    pub fn finish_edit(&mut self, command_id: usize, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
+    fn finish_edit(&mut self, command_id: usize, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
         // let cur_remote = self.remotes.pop().unwrap();
-        Ok(self.endpoint.finish_edit(command_id, edit_id, data)?)
+        Ok(self.finish_edit(command_id, edit_id, data)?)
     }
 
-    pub fn cancel(&mut self, id: usize) -> Result<(), Error> {
-        Ok(self.endpoint.close_process(id)?)
+    fn cancel(&mut self, id: usize) -> Result<(), Error> {
+        Ok(self.close_process(id)?)
     }
 }
