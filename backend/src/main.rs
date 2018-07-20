@@ -20,7 +20,8 @@ extern crate futures;
 extern crate tokio;
 extern crate nix;
 
-use std::collections::HashMap;
+use std::hash::Hash;
+use std::collections::{HashMap, HashSet};
 use std::io::{Write, Read, BufRead, BufReader, Seek, SeekFrom};
 use std::{io, env, fs, thread};
 use std::fs::{File, OpenOptions};
@@ -43,21 +44,7 @@ use unix_socket::{UnixStream, UnixListener};
 
 use rand::{Rng, thread_rng};
 
-use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process, BackTraffic, Transport};
-
-fn write_edit_file_request(id: usize, edit_id: usize, name: String, data: Vec<u8>) -> Result<(), Error> {
-    write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
-        remote_id: 0,
-        message: RpcResponse::EditRequest {
-            command_id: id,
-            edit_id,
-            name,
-            data,
-        },
-    })?)?;
-    io::stdout().flush().unwrap();
-    Ok(())
-}
+use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process, BackTraffic, Transport, Condition, ProcessId, ExitStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditRequest {
@@ -94,6 +81,148 @@ impl Transport for StdoutTransport {
     }
 }
 
+struct ReadPipe(usize);
+struct WritePipe(usize);
+
+struct RunCmd {
+    cmd: Command,
+    stdin_pipe: ReadPipe,
+    stdout_pipe: WritePipe,
+    stderr_pipe: WritePipe,
+}
+
+struct Waiting<Id: Eq+Hash, Cmd> {
+    cmd: Cmd,
+    conditions: HashMap<Id, Condition>,
+}
+
+#[derive(Default)]
+struct Machine<Id: Eq+Hash+Copy+Clone, Cmd> {
+    finished: HashMap<Id, ExitStatus>,
+    running: HashSet<Id>,
+    check_on_completed: HashMap<Id, Vec<(Condition, Id)>>,
+    waiting_on: HashMap<Id, Waiting<Id, Cmd>>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Task<Id, Cmd> {
+    Start(Id, Cmd),
+    ConditionFailed(Id, Cmd),
+}
+
+impl<Id: Eq+Hash+Copy+Clone, Cmd> Machine<Id, Cmd> {
+    fn enqueue(&mut self, new_pid: Id, cmd: Cmd, block_for: HashMap<Id, Condition>) -> Option<Task<Id, Cmd>> {
+        assert!(
+            !self.finished.contains_key(&new_pid) &&
+            !self.running.contains(&new_pid) &&
+            !self.waiting_on.contains_key(&new_pid));
+
+        let mut still_needs_to_block_for = HashMap::new();
+
+        for (existing_pid, cond) in block_for {
+            if let Some(&status) = self.finished.get(&existing_pid) {
+                match cond {
+                    Some(expected) => if expected != status {
+                        return Some(Task::ConditionFailed(new_pid, cmd));
+                    }
+                    None => {}
+                }
+            } else {
+                assert!(
+                    self.running.contains(&existing_pid) ||
+                    self.waiting_on.contains_key(&existing_pid));
+
+                still_needs_to_block_for.insert(existing_pid, cond);
+            }
+        }
+
+        if still_needs_to_block_for.len() == 0 {
+            self.running.insert(new_pid);
+            Some(Task::Start(new_pid, cmd))
+        } else {
+            for (&existing_pid, &cond) in &still_needs_to_block_for {
+                self.check_on_completed.entry(existing_pid).or_insert_with(Vec::new).push((cond, new_pid));
+            }
+            self.waiting_on.insert(new_pid, Waiting {
+                cmd,
+                conditions: still_needs_to_block_for
+            });
+            None
+        }
+    }
+
+    fn completed(&mut self, pid: Id, status: ExitStatus) -> Vec<Task<Id, Cmd>> {
+        let mut tasks = Vec::new();
+
+        assert!(self.running.contains(&pid));
+
+        self.running.remove(&pid);
+        self.finished.insert(pid, status);
+
+        if let Some(blocked) = self.check_on_completed.remove(&pid) {
+            for (cond, waiting_pid) in blocked {
+                let mut waiting = self.waiting_on.remove(&waiting_pid).expect("must be waiting");
+
+                match cond {
+                    Some(expected) if expected != status =>  {
+                        self.finished.insert(waiting_pid, ExitStatus::Failure);
+                        tasks.push(Task::ConditionFailed(waiting_pid, waiting.cmd));
+                        tasks.extend(self.completed(waiting_pid, ExitStatus::Failure));
+                    }
+                    _ => {
+                        let c2 = waiting.conditions.remove(&pid).expect("was waiting");
+                        assert_eq!(c2, cond);
+
+                        if waiting.conditions.len() == 0 {
+                            tasks.push(Task::Start(waiting_pid, waiting.cmd));
+                        } else {
+                            self.waiting_on.insert(waiting_pid, waiting);
+                        }
+                    }
+                }
+            }
+        }
+
+        tasks
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wait(items: &[(usize, Option<ExitStatus>)]) -> HashMap<usize, Option<ExitStatus>> {
+        let mut res = HashMap::new();
+
+        for item in items {
+            res.insert(item.0, item.1);
+        }
+
+        res
+    }
+
+    #[test]
+    fn test_machine() {
+        let mut m = Machine::default();
+
+        assert_eq!(m.enqueue(0, "a", wait(&[])), Some(Task::Start(0, "a")));
+
+        use ExitStatus::*;
+
+        assert_eq!(m.enqueue(1, "b", wait(&[(0, None)])), None);
+        assert_eq!(m.completed(0, ExitStatus::Success), vec![Task::Start(1, "b")]);
+     
+        assert_eq!(m.enqueue(2, "c", wait(&[(0, None)])), Some(Task::Start(2, "c")));
+        assert_eq!(m.enqueue(3, "d", wait(&[(0, Some(Success))])), Some(Task::Start(3, "d")));
+        assert_eq!(m.enqueue(4, "e", wait(&[(0, Some(Failure))])), Some(Task::ConditionFailed(4, "e")));
+        assert_eq!(m.enqueue(5, "f", wait(&[(2, Some(Success)), (3, Some(Success))])), None);
+        assert_eq!(m.enqueue(6, "g", wait(&[(2, Some(Success))])), None);
+     
+        assert_eq!(m.completed(2, ExitStatus::Success), vec![Task::Start(6, "g")]);
+        assert_eq!(m.completed(3, ExitStatus::Success), vec![Task::Start(5, "f")]);
+    }
+}
+
 #[derive(Default)]
 pub struct Backend {
     backtraffic: Arc<Mutex<BackTraffic<StdoutTransport>>>,
@@ -105,7 +234,7 @@ pub struct Backend {
 }
 
 impl Backend {
-    fn run(&mut self, id: usize, stdout_pipe: usize, stderr_pipe: usize, c: Command) -> Result<(), Error> {
+    fn run(&mut self, id: usize, stdout_pipe: usize, stderr_pipe: usize, c: Command, block_for: HashMap<ProcessId, Condition>) -> Result<(), Error> {
         eprintln!("{} running {:?}", id, c);
         match c {
             Command::Unknown(path, args) => {
@@ -454,8 +583,8 @@ fn run_backend() -> Result<(), Error> {
 
                 if rpc.remote_id == 0 {
                     match rpc.message {
-                        RpcRequest::BeginCommand { process: Process { id, stdout_pipe, stderr_pipe } , command } => {
-                            backend.run(id, stdout_pipe, stderr_pipe, command)?;
+                        RpcRequest::BeginCommand { process: Process { id, stdout_pipe, stderr_pipe } , command, block_for } => {
+                            backend.run(id, stdout_pipe, stderr_pipe, command, block_for)?;
                         }
                         RpcRequest::BeginRemote { id, command } => {
                             backend.begin_remote(id, command)?;

@@ -34,6 +34,17 @@ pub struct Multiplex<M> {
     pub message: M
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct ProcessId(usize);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum ExitStatus {
+    Success,
+    Failure,
+}
+
+pub type Condition = Option<ExitStatus>;
+
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Process {
     pub id: usize,
@@ -44,6 +55,7 @@ pub struct Process {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RpcRequest {
     BeginCommand {
+        block_for: HashMap<ProcessId, Condition>,
         process: Process,
         command: Command,
     },
@@ -126,7 +138,6 @@ impl Ids {
 
 struct ProcessState {
     parent: RemoteId,
-    process: Process,
 }
 
 pub trait EndpointHandler<T: Transport>: Sized {
@@ -208,7 +219,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         Ok(RemoteId(id))
     }
 
-    pub fn command(&mut self, remote: RemoteId, command: Command, redirect: Option<Handle>) -> Result<Process, Error> {
+    pub fn command(&mut self, remote: RemoteId, command: Command, block_for: HashMap<ProcessId, Condition>, redirect: Option<Handle>) -> Result<Process, Error> {
         assert!(self.remotes.contains_key(&remote));
 
         let id = self.ids.next_id();
@@ -234,11 +245,12 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         };
 
         self.trans.send(&ser_to_endpoint(remote, RpcRequest::BeginCommand {
+            block_for,
             process,
             command,
         }))?;
 
-        self.jobs.insert(id, ProcessState { process, parent: remote });
+        self.jobs.insert(id, ProcessState { parent: remote });
 
         Ok(process)
     }

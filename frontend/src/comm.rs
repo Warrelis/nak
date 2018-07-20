@@ -6,6 +6,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write, Read};
 use std::io;
+use std::collections::HashMap;
 
 use failure::Error;
 use os_pipe::{PipeWriter, IntoStdio};
@@ -151,10 +152,10 @@ impl EndpointExt for BackendEndpoint {
 
         if let Some(redirect) = redirect {
             let handle = self.open_file(cur_remote, redirect)?;
-            Ok(self.command(cur_remote, c, Some(handle))?)
+            Ok(self.command(cur_remote, c, HashMap::new(), Some(handle))?)
 
         } else {
-            Ok(self.command(cur_remote, c, None)?)
+            Ok(self.command(cur_remote, c, HashMap::new(), None)?)
         }
     }
 
