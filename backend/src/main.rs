@@ -20,7 +20,6 @@ extern crate futures;
 extern crate tokio;
 extern crate nix;
 
-use std::sync::MutexGuard;
 use std::collections::HashMap;
 use std::io::{Write, Read, BufRead, BufReader, Seek, SeekFrom};
 use std::{io, env, fs, thread};
@@ -45,42 +44,6 @@ use unix_socket::{UnixStream, UnixListener};
 use rand::{Rng, thread_rng};
 
 use protocol::{Multiplex, RpcResponse, RpcRequest, Command, Process, BackTraffic, Transport};
-
-fn write_pipe(id: usize, data: Vec<u8>) -> Result<(), Error> {
-    write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
-        remote_id: 0,
-        message: RpcResponse::Pipe {
-            id,
-            data,
-        },
-    })?)?;
-    io::stdout().flush().unwrap();
-    Ok(())
-}
-
-fn write_done(id: usize, exit_code: i64) -> Result<(), Error> {
-    write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
-        remote_id: 0,
-        message: RpcResponse::CommandDone {
-            id,
-            exit_code,
-        },
-    })?)?;
-    io::stdout().flush().unwrap();
-    Ok(())
-}
-
-fn write_directory_listing(id: usize, items: Vec<String>) -> Result<(), Error> {
-    write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
-        remote_id: 0,
-        message: RpcResponse::DirectoryListing {
-            id,
-            items,
-        },
-    })?)?;
-    io::stdout().flush().unwrap();
-    Ok(())
-}
 
 fn write_edit_file_request(id: usize, edit_id: usize, name: String, data: Vec<u8>) -> Result<(), Error> {
     write!(io::stdout(), "{}\n", serde_json::to_string(&Multiplex {
@@ -259,10 +222,10 @@ impl Backend {
                 Ok(())
             }
             Command::SetDirectory(dir) => {
+                let mut back = self.backtraffic.lock().unwrap();
                 match env::set_current_dir(dir) {
-                    Ok(_) => write_done(id, 0),
+                    Ok(_) => back.command_done(id, 1),
                     Err(e) => {
-                        let mut back = self.backtraffic.lock().unwrap();
                         back.pipe(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
                         back.command_done(id, 1)
                     }
@@ -388,6 +351,7 @@ fn random_key() -> String {
 #[cfg(unix)]
 fn setup_editback_socket(
     socket_path: &str, 
+    backtraffic: Arc<Mutex<BackTraffic<StdoutTransport>>>,
     running_commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
     waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>) -> Result<(), Error>
 {
@@ -399,6 +363,7 @@ fn setup_editback_socket(
                 Ok(mut stream) => {
                     let running_commands = running_commands.clone();
                     let waiting_edits = waiting_edits.clone();
+                    let backtraffic = backtraffic.clone();
                     thread::spawn(move || {
 
                         let (sender, receiver) = mpsc::channel();
@@ -418,8 +383,7 @@ fn setup_editback_socket(
                             let req: EditRequest = serde_json::from_str(&line).unwrap();
 
                             waiting_edits.lock().unwrap().insert(0, sender);
-                            write_edit_file_request(command_info.id, 0, req.file_name, req.data).unwrap();
-
+                            backtraffic.lock().unwrap().edit_request(command_info.id, 0, req.file_name, req.data).unwrap();
                         }
 
                         let msg = EditResponse {
@@ -471,7 +435,11 @@ fn run_backend() -> Result<(), Error> {
     env::set_var("PAGER", "nak-backend pager");
     env::set_var("EDITOR", format!("{} editor", env::current_exe()?.to_str().expect("current exe")));
 
-    setup_editback_socket(&socket_path, backend.running_commands.clone(), backend.waiting_edits.clone())?;
+    setup_editback_socket(
+        &socket_path,
+        backend.backtraffic.clone(),
+        backend.running_commands.clone(),
+        backend.waiting_edits.clone())?;
 
     loop {
         let mut input = String::new();
@@ -507,7 +475,8 @@ fn run_backend() -> Result<(), Error> {
                                 i.unwrap().file_name().into_string().unwrap()
                             }).collect();
 
-                            write_directory_listing(id, items)?;
+
+                            backend.backtraffic.lock().unwrap().directory_listing(id, items)?;
                         }
                         RpcRequest::FinishEdit { id, data } => {
                             backend.waiting_edits.lock().unwrap().remove(&id).unwrap().send(data)?;
