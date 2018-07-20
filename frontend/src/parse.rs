@@ -169,7 +169,7 @@ pub struct Parser {
 
 fn is_word_char(ch: u8) -> bool {
     match ch {
-        b'a'...b'z' | b'A'...b'Z'|b'0'...b'9'|b'.'|b'-'|b'_'|b'/'|b'{'|b'}'|b'$'|b'@'|b'='|b',' => true,
+        b'a'...b'z' | b'A'...b'Z'|b'0'...b'9'|b'.'|b'-'|b'_'|b'/'|b'{'|b'}'|b'$'|b'@'|b'='|b','|b'~' => true,
         _ => false,
     }
 }
