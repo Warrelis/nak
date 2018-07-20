@@ -171,9 +171,9 @@ mod tests {
         assert_eq!(m.enqueue(5, "f", wait(&[(2, Some(Success)), (3, Some(Success))])), None);
         assert_eq!(m.enqueue(6, "g", wait(&[(2, Some(Success))])), None);
      
-        m.start(0, "badger");
+        m.start(2, "badger");
         assert_eq!(m.completed(2, ExitStatus::Success), vec![Task::Start(6, "g")]);
-        m.start(0, "anthill");
+        m.start(3, "anthill");
         assert_eq!(m.completed(3, ExitStatus::Success), vec![Task::Start(5, "f")]);
     }
 }
