@@ -38,10 +38,14 @@ fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
 
     let cmd = p.parse(input);
 
-    let seq = cmd.commands();
+    let seq = cmd.pipes();
 
     if seq.len() == 1 {
-        let cmd = &seq[0];
+        let commands = &seq[0].commands();
+
+        assert_eq!(commands.len(), 1);
+        let cmd = &commands[0];
+
         let mut parts = vec![cmd.head().to_string()];
         parts.extend(cmd.body().into_iter().map(|e| e.to_string()));
 

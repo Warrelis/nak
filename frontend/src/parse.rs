@@ -86,6 +86,7 @@ impl Node {
     }
 }
 
+#[derive(Clone)]
 struct View<'t, 'n> {
     node: &'n Node,
     text: &'t str,
@@ -157,7 +158,30 @@ impl<'t, 'n> Redirect<'t, 'n> {
 pub struct SequenceView<'t, 'n>(View<'t, 'n>);
 
 impl<'t, 'n> SequenceView<'t, 'n> {
+    pub fn pipes(&self) -> Vec<PipeView<'t, 'n>> {
+        let mut res = Vec::new();
+        for c in &self.0.node.children {
+            match c.ty {
+                NodeType::Whitespace |
+                NodeType::SequenceSymbol |
+                NodeType::Comment => continue,
+                NodeType::Pipe |
+                NodeType::Command => res.push(PipeView(View { node: c, text: self.0.text })),
+                _ => panic!("{:?}", c.ty),
+            }
+        }
+        res
+    }
+}
+
+pub struct PipeView<'t, 'n>(View<'t, 'n>);
+
+impl<'t, 'n> PipeView<'t, 'n> {
     pub fn commands(&self) -> Vec<CommandView<'t, 'n>> {
+        if self.0.node.ty == NodeType::Command {
+            return vec![CommandView(self.0.clone())];
+        }
+
         let mut res = Vec::new();
         for c in &self.0.node.children {
             match c.ty {
@@ -165,7 +189,7 @@ impl<'t, 'n> SequenceView<'t, 'n> {
                 NodeType::SequenceSymbol |
                 NodeType::Comment => continue,
                 NodeType::Command => res.push(CommandView(View { node: c, text: self.0.text })),
-                _ => panic!(),
+                _ => panic!("{:?}", c.ty),
             }
         }
         res
