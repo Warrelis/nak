@@ -1,5 +1,31 @@
 use std::borrow::Cow;
 
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+enum Target {
+    File(String),
+    Command(Box<Ast>),
+}
+
+enum Word {
+    Normal(String),
+}
+
+enum SequenceType {
+    Wait,
+    And,
+    Or,
+}
+
+enum Ast {
+    Cmd(Vec<Word>),
+    Sequence(Box<Ast>, SequenceType, Box<Ast>),
+    Redirect(Box<Ast>, Stream, Target),
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum NodeType {
     Whitespace,
