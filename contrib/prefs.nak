@@ -1,0 +1,27 @@
+{
+	"aliases": [
+		{
+			"find": [{"Literal": "g"}, {"Literal": "a"}, {"Expando": 0}],
+			"replace": [{"Literal": "git"}, {"Literal": "add"}, {"Expando": 0}]
+		},		{
+			"find": [{"Literal": "g"}, {"Literal": "c"}, {"Expando": 0}],
+			"replace": [{"Literal": "git"}, {"Literal": "commit"}, {"Expando": 0}]
+		},
+		{
+			"find": [{"Literal": "g"}, {"Literal": "co"}, {"Expando": 0}],
+			"replace": [{"Literal": "git"}, {"Literal": "checkout"}, {"Expando": 0}]
+		},
+		{
+			"find": [{"Literal": "g"}, {"Literal": "s"}, {"Expando": 0}],
+			"replace": [{"Literal": "git"}, {"Literal": "status"}, {"Expando": 0}]
+		},
+		{
+			"find": [{"Literal": "g"}, {"Expando": 0}],
+			"replace": [{"Literal": "git"}, {"Expando": 0}]
+		},
+		{
+			"find": [{"Literal": "vagrant"}, {"Literal": "ssh"}, {"Variable": 0}, {"Expando": 1}],
+			"replace": [{"Literal": "nak"}, {"Literal": "nak-plugin-vagrant-ssh"}, {"Variable": 0}, {"Expando": 1}]
+		}
+	]
+}
