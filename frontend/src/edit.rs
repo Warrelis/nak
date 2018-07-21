@@ -3,7 +3,7 @@ use Shell;
 use protocol::Command;
 use std::io::Write;
 use failure::Error;
-use parse::Parser;
+use parse::{Ast, Word, Cmd, parse_input};
 use comm::BackendEndpoint;
 use liner;
 use std::env;
@@ -21,63 +21,60 @@ pub trait Reader {
     fn save_history(&mut self);
 }
 
-fn check_single_arg<'a>(items: &[String]) -> Result<String, Error> {
-    if items.len() == 1 {
-        Ok(items[0].clone())
+fn check_single_arg<'a>(items: impl Iterator<Item=Word>) -> Result<String, Error> {
+    let mut items = items;
+    if let Some(i) = items.next() {
+        if items.next().is_none() {
+            match i {
+                Word::Normal(s) => Ok(s)
+            }
+        } else {
+            Err(format_err!("bad too many args"))
+        }
     } else {
-        Err(format_err!("Bad argument length: {}", items.len()))
+        Err(format_err!("not enough args"))
     }
 }
 
+fn convert_single(prefs: &Prefs, cmd: Cmd) -> Result<Shell, Error> {
+    let mut it = cmd.0.into_iter();
+    let head = it.next().unwrap().expand_string();
+
+    Ok(Shell::Run {
+        cmd: match head.as_str() {
+            "cd" => Command::SetDirectory(check_single_arg(it)?),
+            "micro" => Command::Edit(check_single_arg(it)?), // TODO: make this a configurable alias instead
+            "nak" => {
+                let head = it.next().unwrap().expand_string();
+
+                return Ok(Shell::BeginRemote(Command::Unknown(
+                    head,
+                    it.map(|i| i.expand_string()).collect(),
+                )));
+            }
+            _ => Command::Unknown(
+                head.to_string(),
+                it.map(|i| i.expand_string()).collect(),
+            )
+        },
+        redirect: None,
+    })
+}
+
 fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
-    let mut p = Parser::new();
+    let cmd = parse_input(input);
 
-    if input.len() == 0 {
-        return Ok(Shell::DoNothing);
-    }
-
-    let cmd = p.parse(input);
-
-    let seq = cmd.pipes();
-
-    if seq.len() == 1 {
-        let commands = &seq[0].commands();
-
-        assert_eq!(commands.len(), 1);
-        let cmd = &commands[0];
-
-        let mut parts = vec![cmd.head().to_string()];
-        parts.extend(cmd.body().into_iter().map(|e| e.to_string()));
-
-        parts = prefs.expand(parts);
-
-        let redirect = cmd.redirect().map(|r| r.file().to_string());
-
-        let head = &parts[0];
-        let body = &parts[1..];
-
-        Ok(Shell::Run {
-            cmd: match head.as_str() {
-                "cd" => Command::SetDirectory(check_single_arg(body)?),
-                "micro" => Command::Edit(check_single_arg(body)?), // TODO: make this a configurable alias instead
-                "nak" => {
-                    let mut it = body.into_iter();
-                    let head = it.next().unwrap().to_string();
-
-                    return Ok(Shell::BeginRemote(Command::Unknown(
-                        head,
-                        it.map(|i| i.to_string()).collect(),
-                    )));
-                }
-                _ => Command::Unknown(
-                    head.to_string(),
-                    body.into_iter().map(|i| i.to_string()).collect(),
-                )
-            },
-            redirect,
-        })
-    } else {
-        panic!();
+    match cmd {
+        Ast::Empty => Ok(Shell::DoNothing),
+        Ast::Cmd(cmd) => convert_single(prefs, cmd),
+        Ast::Sequence(_head, _clauses) => {
+            // convert_single(prefs, head);
+            panic!();
+        }
+        Ast::Redirect(_head, _clauses) => {
+            // convert_single(prefs, head);
+            panic!();
+        }
     }
 }
 

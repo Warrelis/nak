@@ -1,29 +1,158 @@
 use std::borrow::Cow;
 
-enum Stream {
+pub enum Stream {
     Stdout,
     Stderr,
 }
 
-enum Target {
+pub enum Target {
     File(String),
     Command(Box<Ast>),
 }
 
-enum Word {
+pub enum Word {
     Normal(String),
 }
 
-enum SequenceType {
+impl Word {
+    pub fn expand_string(self) -> String {
+        match self {
+            Word::Normal(s) => s,
+        }
+    }
+}
+
+pub enum SequenceType {
     Wait,
     And,
     Or,
 }
 
-enum Ast {
-    Cmd(Vec<Word>),
-    Sequence(Box<Ast>, SequenceType, Box<Ast>),
-    Redirect(Box<Ast>, Stream, Target),
+pub struct Cmd(pub Vec<Word>);
+
+pub struct SequenceClause(pub SequenceType, pub Ast);
+pub struct RedirectClause(pub Stream, pub Target);
+
+pub enum Ast {
+    Empty,
+    Cmd(Cmd),
+    Sequence(Box<Ast>, Vec<SequenceClause>),
+    Redirect(Box<Ast>, Vec<RedirectClause>),
+}
+
+fn skip_whitespace(input: &mut Consume) {
+    while let Some(c) = input.cur() {
+        if c != b' ' {
+            break;
+        }
+        input.pos += 1;
+    }
+}
+
+fn parse_quote(input: &mut Consume) -> Word {
+    assert!(input.next() == Some(b'"'));
+
+    let begin = input.pos;
+
+    loop {
+        match input.next() {
+            Some(b'"') => break,
+            Some(_) => {}
+            None => panic!(),
+        }
+    }
+
+    Word::Normal(input.chars[begin..input.pos - 1].to_string())
+}
+
+fn parse_word(input: &mut Consume) -> Word {
+    let begin = input.pos;
+
+    loop {
+        match input.next() {
+            Some(b'"') => panic!(),
+            Some(ch) => {}
+            None => break,
+        }
+    }
+
+    Word::Normal(input.chars[begin..input.pos].to_string())
+}
+
+fn parse_cmd(input: &mut Consume) -> Cmd {
+    let mut children = vec![parse_word(input)];
+
+    loop {
+        skip_whitespace(input);
+        match input.cur() {
+            None | Some(b';') | Some(b'|') | Some(b'>') => break,
+            _ => children.push(parse_word(input)),
+        }
+    }
+
+    Cmd(children)
+}
+
+fn parse_pipe(input: &mut Consume) -> Ast {
+    let head = Ast::Cmd(parse_cmd(input));
+
+    let mut children = vec![];
+
+    loop {
+        skip_whitespace(input);
+        match input.next() {
+            None => break,
+            Some(b';') => {
+                input.next();
+                children.push(SequenceClause(SequenceType::Wait, parse_pipe(input)));
+            }
+            Some(_) => panic!(),
+        }
+    }
+
+    if children.len() == 0 {
+        head
+    } else {
+        Ast::Sequence(Box::new(head), children)
+    }
+}
+
+fn parse_seq(input: &mut Consume) -> Ast {
+    let head = parse_pipe(input);
+
+    let mut children = vec![];
+
+    loop {
+        skip_whitespace(input);
+        match input.next() {
+            None => break,
+            Some(b';') => {
+                input.next();
+                children.push(SequenceClause(SequenceType::Wait, parse_pipe(input)));
+            }
+            Some(_) => panic!(),
+        }
+    }
+
+    if children.len() == 0 {
+        head
+    } else {
+        Ast::Sequence(Box::new(head), children)
+    }
+}
+
+fn parse_line(input: &mut Consume) -> Ast {
+    skip_whitespace(input);
+
+    let res = parse_seq(input);
+
+    assert_eq!(input.pos, input.text.len());
+
+    res
+}
+
+pub fn parse_input(input: &str) -> Ast {
+    parse_line(&mut Consume { chars: input, text: input.as_bytes(), pos: 0 })
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -247,6 +376,7 @@ fn is_word_char(ch: u8) -> bool {
 }
 
 struct Consume<'a> {
+    chars: &'a str,
     text: &'a [u8],
     pos: usize,
 }
@@ -255,6 +385,16 @@ impl<'a> Consume<'a> {
     fn cur(&self) -> Option<u8> {
         if self.pos < self.text.len() {
             Some(self.text[self.pos])
+        } else {
+            None
+        }
+    }
+
+    fn next(&mut self) -> Option<u8> {
+        if self.pos < self.text.len() {
+            let res = Some(self.text[self.pos]);
+            self.pos += 1;
+            res
         } else {
             None
         }
@@ -444,7 +584,7 @@ impl Parser {
 
     pub fn parse<'t, 'n>(&'n mut self, text: &'t str) -> SequenceView<'t, 'n> {
 
-        let mut input = Consume { text: text.as_bytes(), pos: 0 };
+        let mut input = Consume { chars: text, text: text.as_bytes(), pos: 0 };
 
         let cmd = self.parse_seq(&mut input);
 
