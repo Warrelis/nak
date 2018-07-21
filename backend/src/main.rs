@@ -544,13 +544,24 @@ fn setup_editback_socket(
     Ok(())
 }
 
+
+#[cfg(unix)]
+fn setup_ctrlc_handler() {
+    ctrlc::set_handler(move || {
+        eprintln!("backend caught CtrlC");
+    }).expect("Error setting CtrlC handler");
+}
+
+#[cfg(not(unix))]
+fn setup_ctrlc_handler() {
+
+}
+
 fn run_backend() -> Result<(), Error> {
 
     let mut backend = AsyncBackendHandler::new();
 
-    // ctrlc::set_handler(move || {
-    //     eprintln!("backend caught CtrlC");
-    // }).expect("Error setting CtrlC handler");
+    setup_ctrlc_handler();
 
     // eprintln!("spawn_self");
     write!(io::stdout(), "nxQh6wsIiiFomXWE+7HQhQ==\n").unwrap();
