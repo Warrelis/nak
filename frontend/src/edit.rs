@@ -38,36 +38,43 @@ fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
 
     let cmd = p.parse(input);
 
-    let mut parts = vec![cmd.head().to_string()];
-    parts.extend(cmd.body().into_iter().map(|e| e.to_string()));
+    let seq = cmd.commands();
 
-    parts = prefs.expand(parts);
+    if seq.len() == 1 {
+        let cmd = &seq[0];
+        let mut parts = vec![cmd.head().to_string()];
+        parts.extend(cmd.body().into_iter().map(|e| e.to_string()));
 
-    let redirect = cmd.redirect().map(|r| r.file().to_string());
+        parts = prefs.expand(parts);
 
-    let head = &parts[0];
-    let body = &parts[1..];
+        let redirect = cmd.redirect().map(|r| r.file().to_string());
 
-    Ok(Shell::Run {
-        cmd: match head.as_str() {
-            "cd" => Command::SetDirectory(check_single_arg(body)?),
-            "micro" => Command::Edit(check_single_arg(body)?), // TODO: make this a configurable alias instead
-            "nak" => {
-                let mut it = body.into_iter();
-                let head = it.next().unwrap().to_string();
+        let head = &parts[0];
+        let body = &parts[1..];
 
-                return Ok(Shell::BeginRemote(Command::Unknown(
-                    head,
-                    it.map(|i| i.to_string()).collect(),
-                )));
-            }
-            _ => Command::Unknown(
-                head.to_string(),
-                body.into_iter().map(|i| i.to_string()).collect(),
-            )
-        },
-        redirect,
-    })
+        Ok(Shell::Run {
+            cmd: match head.as_str() {
+                "cd" => Command::SetDirectory(check_single_arg(body)?),
+                "micro" => Command::Edit(check_single_arg(body)?), // TODO: make this a configurable alias instead
+                "nak" => {
+                    let mut it = body.into_iter();
+                    let head = it.next().unwrap().to_string();
+
+                    return Ok(Shell::BeginRemote(Command::Unknown(
+                        head,
+                        it.map(|i| i.to_string()).collect(),
+                    )));
+                }
+                _ => Command::Unknown(
+                    head.to_string(),
+                    body.into_iter().map(|i| i.to_string()).collect(),
+                )
+            },
+            redirect,
+        })
+    } else {
+        panic!();
+    }
 }
 
 struct SimpleCompleter;

@@ -1,13 +1,14 @@
 use std::borrow::Cow;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum NodeType {
     Whitespace,
     Comment,
     Word,
     Quote,
     Command,
-    // Sequence,
+    Sequence,
+    SequenceSymbol,
     // If,
     // While,
     // For,
@@ -15,6 +16,7 @@ pub enum NodeType {
     RedirectSymbol,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     ty: NodeType,
     begin: usize,
@@ -124,9 +126,27 @@ impl<'t, 'n> Redirect<'t, 'n> {
     }
 }
 
-pub struct Command<'t, 'n>(View<'t, 'n>);
+pub struct SequenceView<'t, 'n>(View<'t, 'n>);
 
-impl<'t, 'n> Command<'t, 'n> {
+impl<'t, 'n> SequenceView<'t, 'n> {
+    pub fn commands(&self) -> Vec<CommandView<'t, 'n>> {
+        let mut res = Vec::new();
+        for c in &self.0.node.children {
+            match c.ty {
+                NodeType::Whitespace |
+                NodeType::SequenceSymbol |
+                NodeType::Comment => continue,
+                NodeType::Command => res.push(CommandView(View { node: c, text: self.0.text })),
+                _ => panic!(),
+            }
+        }
+        res
+    }
+}
+
+pub struct CommandView<'t, 'n>(View<'t, 'n>);
+
+impl<'t, 'n> CommandView<'t, 'n> {
     pub fn head(&self) -> Cow<'t, str> {
         self.0.find_first(NodeType::Word).map(|v| v.text().into())
             .unwrap_or_else(|| unquote(self.0.find_first(NodeType::Quote).unwrap().text()))
@@ -213,62 +233,55 @@ impl Parser {
     }
 
     fn parse_word<'a>(&mut self, input: &mut Consume<'a>) -> Node {
-        if let Some(c) = input.cur() {
-
-            match c {
-                b'"' => {
+        match input.cur().unwrap() {
+            b'"' => {
+                let begin = input.pos;
+                input.pos += 1;
+                while let Some(c) = input.cur() {
+                    if c == b'"' {
+                        break;
+                    }
+                    input.pos += 1;
+                }
+                input.pos += 1;
+                Node {
+                    ty: NodeType::Quote,
+                    begin,
+                    end: input.pos,
+                    children: vec![],
+                }
+            }
+            ch => {
+                if is_word_char(ch) {
                     let begin = input.pos;
                     input.pos += 1;
                     while let Some(c) = input.cur() {
-                        if c == b'"' {
+                        if !is_word_char(c) {
                             break;
                         }
                         input.pos += 1;
                     }
-                    input.pos += 1;
                     Node {
-                        ty: NodeType::Quote,
+                        ty: NodeType::Word,
                         begin,
                         end: input.pos,
                         children: vec![],
                     }
-                }
-                ch => {
-                    if is_word_char(ch) {
-                        let begin = input.pos;
-                        input.pos += 1;
-                        while let Some(c) = input.cur() {
-                            if !is_word_char(c) {
-                                break;
-                            }
-                            input.pos += 1;
-                        }
-                        Node {
-                            ty: NodeType::Word,
-                            begin,
-                            end: input.pos,
-                            children: vec![],
-                        }
-                    } else {
-                        panic!();
-                    }
+                } else {
+                    panic!();
                 }
             }
-        } else {
-            panic!();
         }
     }
 
-    pub fn parse<'t, 'n>(&'n mut self, text: &'t str) -> Command<'t, 'n> {
-
-        let mut input = Consume { text: text.as_bytes(), pos: 0 };
-
+    fn parse_command<'a>(&mut self, input: &mut Consume<'a>) -> Node {
         let mut children = Vec::new();
+        let begin = input.pos;
 
         while let Some(c) = input.cur() {
             match c {
-                b' ' | b'\n' => children.push(self.parse_whitespace(&mut input)),
-                b'"' => children.push(self.parse_word(&mut input)),
+                b' ' | b'\n' => children.push(self.parse_whitespace(input)),
+                b'"' => children.push(self.parse_word(input)),
                 b'>' => {
                     let mut redir_children = Vec::new();
 
@@ -282,11 +295,11 @@ impl Parser {
                     });
 
                     match input.cur() {
-                        Some(b' ') | Some(b'\n') => redir_children.push(self.parse_whitespace(&mut input)),
+                        Some(b' ') | Some(b'\n') => redir_children.push(self.parse_whitespace(input)),
                         _ => {}
                     }
 
-                    redir_children.push(self.parse_word(&mut input));
+                    redir_children.push(self.parse_word(input));
 
                     children.push(Node {
                         ty: NodeType::Redirect,
@@ -295,16 +308,59 @@ impl Parser {
                         children: redir_children,
                     });
                 }
-                _ => children.push(self.parse_word(&mut input)),
+                b';' => {
+                    assert!(children.len() > 0);
+
+                    break;
+                }
+                _ => children.push(self.parse_word(input)),
             }
         }
 
-        self.nodes.push(Node {
+        Node {
             ty: NodeType::Command,
+            begin: begin,
+            end: input.pos,
+            children,
+        }
+    }
+
+    fn parse_seq<'a>(&mut self, input: &mut Consume<'a>) -> Node {
+        let mut children = Vec::new();
+
+        while let Some(c) = input.cur() {
+            match c {
+                b'>' => panic!(),
+                b';' => {
+                    let begin = input.pos;
+                    input.pos += 1;
+
+                    children.push(Node {
+                        ty: NodeType::SequenceSymbol,
+                        begin,
+                        end: input.pos,
+                        children: vec![],
+                    });
+                }
+                _ => children.push(self.parse_command(input)),
+            }
+        }
+
+        Node {
+            ty: NodeType::Sequence,
             begin: 0,
             end: input.text.len(),
             children,
-        });
+        }
+    }
+
+    pub fn parse<'t, 'n>(&'n mut self, text: &'t str) -> SequenceView<'t, 'n> {
+
+        let mut input = Consume { text: text.as_bytes(), pos: 0 };
+
+        let cmd = self.parse_seq(&mut input);
+
+        self.nodes.push(cmd);
 
         let v = View {
             node: self.nodes.last().unwrap(),
@@ -313,87 +369,63 @@ impl Parser {
 
         v.assert_full();
 
-        Command(v)
+        SequenceView(v)
     }
 }
 
-#[test]
-fn check_full() {
-    View {
-        node: &Node {
-            ty: NodeType::Whitespace,
-            begin: 0,
-            end: 7,
-            children: vec![],
-        },
-        text: "1234567"
-    }.assert_full();
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[test]
-fn can_parse() {
-    let mut parser = Parser::new();
+    use serde_json;
+    use std::fs::File;
+    use std::io::{Read, Write};
 
-    parser.parse("");
-
-    {
-        let v = parser.parse("test");
-        assert_eq!(v.0.node.ty, NodeType::Command);
-        assert_eq!(
-            v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
-            vec![NodeType::Word]);
+    #[test]
+    fn check_full() {
+        View {
+            node: &Node {
+                ty: NodeType::Whitespace,
+                begin: 0,
+                end: 7,
+                children: vec![],
+            },
+            text: "1234567"
+        }.assert_full();
     }
 
-    {
-        let v = parser.parse(" test ");
-        assert_eq!(v.0.node.ty, NodeType::Command);
-        assert_eq!(
-            v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
-            vec![NodeType::Whitespace, NodeType::Word, NodeType::Whitespace]);
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct ParserTest {
+        input: String,
+        output: Option<Node>,
     }
 
-    {
-        let v = parser.parse(" test test2");
-        assert_eq!(v.0.node.ty, NodeType::Command);
-        assert_eq!(
-            v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
-            vec![
-                NodeType::Whitespace,
-                NodeType::Word,
-                NodeType::Whitespace,
-                NodeType::Word,
-            ]);
-    }
-    {
-        let v = parser.parse(" \"test test2\" \"1 2 3\"");
-        assert_eq!(v.0.node.ty, NodeType::Command);
-        assert_eq!(
-            v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
-            vec![
-                NodeType::Whitespace,
-                NodeType::Quote,
-                NodeType::Whitespace,
-                NodeType::Quote,
-            ]);
-        assert_eq!(v.head(), "test test2");
-        assert_eq!(v.body(), vec!["1 2 3"]);
-    }
-    {
-        let v = parser.parse("a \"test test2\" > \"1 2 3\"");
-        assert_eq!(v.0.node.ty, NodeType::Command);
-        assert_eq!(
-            v.0.node.children.iter().map(|v| v.ty).collect::<Vec<_>>(),
-            vec![
-                NodeType::Word,
-                NodeType::Whitespace,
-                NodeType::Quote,
-                NodeType::Whitespace,
-                NodeType::Redirect,
-            ]);
-        assert_eq!(v.head(), "a");
-        assert_eq!(v.body(), vec!["test test2"]);
-        let redir = v.redirect().expect("no redir?");
-        assert_eq!(redir.direction(), PipeDirection::ToFile);
-        assert_eq!(redir.file(), "1 2 3");
+    #[test]
+    fn check_many() {
+        let mut contents = String::new();
+        File::open("tests/parser.json").unwrap().read_to_string(&mut contents).unwrap();
+        let tests: Vec<ParserTest> = serde_json::from_str(&contents).unwrap();
+
+        let mut parser = Parser::new();
+
+        for test in tests.iter() {
+            eprintln!("test: {}", test.input);
+            let output = parser.parse(&test.input).0;
+            eprintln!("  output: {:#?}", output.node);
+
+
+            output.assert_full();
+            if let Some(ref expected) = test.output {
+                assert_eq!(expected, output.node);
+            }
+        }
+
+        let actual = tests.iter()
+            .map(|t| ParserTest {
+                input: t.input.clone(),
+                output: Some(parser.parse(&t.input).0.node.clone())
+            }).collect::<Vec<_>>();
+
+        File::create("tests/parser.actual.json").unwrap().write_all(serde_json::to_string_pretty(&actual).unwrap().as_bytes()).unwrap();
     }
 }
