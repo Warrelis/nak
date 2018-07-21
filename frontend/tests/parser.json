@@ -387,5 +387,9 @@
         }
       ]
     }
+  },
+  {
+    "input": "a | b | c",
+    "output": null
   }
 ]

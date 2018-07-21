@@ -12,6 +12,8 @@ pub enum NodeType {
     // If,
     // While,
     // For,
+    Pipe,
+    PipeSymbol,
     Redirect,
     RedirectSymbol,
 }
@@ -325,6 +327,35 @@ impl Parser {
         }
     }
 
+    fn parse_pipe<'a>(&mut self, input: &mut Consume<'a>) -> Node {
+        let mut children = Vec::new();
+
+        while let Some(c) = input.cur() {
+            match c {
+                b'>' => panic!(),
+                b'|' => {
+                    let begin = input.pos;
+                    input.pos += 1;
+
+                    children.push(Node {
+                        ty: NodeType::PipeSymbol,
+                        begin,
+                        end: input.pos,
+                        children: vec![],
+                    });
+                }
+                _ => children.push(self.parse_command(input)),
+            }
+        }
+
+        Node {
+            ty: NodeType::Pipe,
+            begin: 0,
+            end: input.text.len(),
+            children,
+        }
+    }
+
     fn parse_seq<'a>(&mut self, input: &mut Consume<'a>) -> Node {
         let mut children = Vec::new();
 
@@ -342,7 +373,7 @@ impl Parser {
                         children: vec![],
                     });
                 }
-                _ => children.push(self.parse_command(input)),
+                _ => children.push(self.parse_pipe(input)),
             }
         }
 
