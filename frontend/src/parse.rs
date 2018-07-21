@@ -310,9 +310,8 @@ impl Parser {
                         children: redir_children,
                     });
                 }
-                b';' => {
+                b';' | b'|' => {
                     assert!(children.len() > 0);
-
                     break;
                 }
                 _ => children.push(self.parse_word(input)),
@@ -333,6 +332,10 @@ impl Parser {
         while let Some(c) = input.cur() {
             match c {
                 b'>' => panic!(),
+                b';' => {
+                    assert!(children.len() > 0);
+                    break;
+                }
                 b'|' => {
                     let begin = input.pos;
                     input.pos += 1;
@@ -348,11 +351,15 @@ impl Parser {
             }
         }
 
-        Node {
-            ty: NodeType::Pipe,
-            begin: 0,
-            end: input.text.len(),
-            children,
+        if children.len() == 1 {
+            children.into_iter().next().unwrap()
+        } else {
+            Node {
+                ty: NodeType::Pipe,
+                begin: 0,
+                end: input.text.len(),
+                children,
+            }
         }
     }
 
@@ -443,7 +450,6 @@ mod tests {
             eprintln!("test: {}", test.input);
             let output = parser.parse(&test.input).0;
             eprintln!("  output: {:#?}", output.node);
-
 
             output.assert_full();
             if let Some(ref expected) = test.output {
