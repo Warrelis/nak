@@ -2,22 +2,9 @@
   {
     "input": "a",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 1,
-      "children": [
+      "Cmd": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 1,
-          "children": [
-            {
-              "ty": "Word",
-              "begin": 0,
-              "end": 1,
-              "children": []
-            }
-          ]
+          "Normal": "a"
         }
       ]
     }
@@ -25,28 +12,9 @@
   {
     "input": " a",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 2,
-      "children": [
+      "Cmd": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 2,
-          "children": [
-            {
-              "ty": "Whitespace",
-              "begin": 0,
-              "end": 1,
-              "children": []
-            },
-            {
-              "ty": "Word",
-              "begin": 1,
-              "end": 2,
-              "children": []
-            }
-          ]
+          "Normal": "a"
         }
       ]
     }
@@ -54,28 +22,9 @@
   {
     "input": "a ",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 2,
-      "children": [
+      "Cmd": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 2,
-          "children": [
-            {
-              "ty": "Word",
-              "begin": 0,
-              "end": 1,
-              "children": []
-            },
-            {
-              "ty": "Whitespace",
-              "begin": 1,
-              "end": 2,
-              "children": []
-            }
-          ]
+          "Normal": "a"
         }
       ]
     }
@@ -83,34 +32,12 @@
   {
     "input": "a b",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 3,
-      "children": [
+      "Cmd": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 3,
-          "children": [
-            {
-              "ty": "Word",
-              "begin": 0,
-              "end": 1,
-              "children": []
-            },
-            {
-              "ty": "Whitespace",
-              "begin": 1,
-              "end": 2,
-              "children": []
-            },
-            {
-              "ty": "Word",
-              "begin": 2,
-              "end": 3,
-              "children": []
-            }
-          ]
+          "Normal": "a"
+        },
+        {
+          "Normal": "b"
         }
       ]
     }
@@ -118,46 +45,12 @@
   {
     "input": " a  b    ",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 9,
-      "children": [
+      "Cmd": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 9,
-          "children": [
-            {
-              "ty": "Whitespace",
-              "begin": 0,
-              "end": 1,
-              "children": []
-            },
-            {
-              "ty": "Word",
-              "begin": 1,
-              "end": 2,
-              "children": []
-            },
-            {
-              "ty": "Whitespace",
-              "begin": 2,
-              "end": 4,
-              "children": []
-            },
-            {
-              "ty": "Word",
-              "begin": 4,
-              "end": 5,
-              "children": []
-            },
-            {
-              "ty": "Whitespace",
-              "begin": 5,
-              "end": 9,
-              "children": []
-            }
-          ]
+          "Normal": "a"
+        },
+        {
+          "Normal": "b"
         }
       ]
     }
@@ -165,46 +58,15 @@
   {
     "input": "a \"b c\"   \"c    d\"",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 18,
-      "children": [
+      "Cmd": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 18,
-          "children": [
-            {
-              "ty": "Word",
-              "begin": 0,
-              "end": 1,
-              "children": []
-            },
-            {
-              "ty": "Whitespace",
-              "begin": 1,
-              "end": 2,
-              "children": []
-            },
-            {
-              "ty": "Quote",
-              "begin": 2,
-              "end": 7,
-              "children": []
-            },
-            {
-              "ty": "Whitespace",
-              "begin": 7,
-              "end": 10,
-              "children": []
-            },
-            {
-              "ty": "Quote",
-              "begin": 10,
-              "end": 18,
-              "children": []
-            }
-          ]
+          "Normal": "a"
+        },
+        {
+          "Normal": "b c"
+        },
+        {
+          "Normal": "c    d"
         }
       ]
     }
@@ -212,22 +74,9 @@
   {
     "input": "a123",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 4,
-      "children": [
+      "Cmd": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 4,
-          "children": [
-            {
-              "ty": "Word",
-              "begin": 0,
-              "end": 4,
-              "children": []
-            }
-          ]
+          "Normal": "a123"
         }
       ]
     }
@@ -235,22 +84,9 @@
   {
     "input": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678.-_/{}$@=,~",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 72,
-      "children": [
+      "Cmd": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 72,
-          "children": [
-            {
-              "ty": "Word",
-              "begin": 0,
-              "end": 72,
-              "children": []
-            }
-          ]
+          "Normal": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678.-_/{}$@=,~"
         }
       ]
     }
@@ -258,138 +94,101 @@
   {
     "input": "a > b",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 5,
-      "children": [
+      "Redirect": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 5,
-          "children": [
+          "Cmd": [
             {
-              "ty": "Word",
-              "begin": 0,
-              "end": 1,
-              "children": []
-            },
-            {
-              "ty": "Whitespace",
-              "begin": 1,
-              "end": 2,
-              "children": []
-            },
-            {
-              "ty": "Redirect",
-              "begin": 2,
-              "end": 5,
-              "children": [
-                {
-                  "ty": "RedirectSymbol",
-                  "begin": 2,
-                  "end": 3,
-                  "children": []
-                },
-                {
-                  "ty": "Whitespace",
-                  "begin": 3,
-                  "end": 4,
-                  "children": []
-                },
-                {
-                  "ty": "Word",
-                  "begin": 4,
-                  "end": 5,
-                  "children": []
-                }
-              ]
+              "Normal": "a"
             }
           ]
-        }
+        },
+        [
+          [
+            "Stdout",
+            {
+              "File": {
+                "Normal": "b"
+              }
+            }
+          ]
+        ]
       ]
     }
   },
   {
     "input": "a; b ; c",
     "output": {
-      "ty": "Sequence",
-      "begin": 0,
-      "end": 8,
-      "children": [
+      "Sequence": [
         {
-          "ty": "Command",
-          "begin": 0,
-          "end": 1,
-          "children": [
+          "Cmd": [
             {
-              "ty": "Word",
-              "begin": 0,
-              "end": 1,
-              "children": []
+              "Normal": "a"
             }
           ]
         },
-        {
-          "ty": "SequenceSymbol",
-          "begin": 1,
-          "end": 2,
-          "children": []
-        },
-        {
-          "ty": "Command",
-          "begin": 2,
-          "end": 5,
-          "children": [
+        [
+          [
+            "Wait",
             {
-              "ty": "Whitespace",
-              "begin": 2,
-              "end": 3,
-              "children": []
-            },
+              "Cmd": [
+                {
+                  "Normal": "b"
+                }
+              ]
+            }
+          ],
+          [
+            "Wait",
             {
-              "ty": "Word",
-              "begin": 3,
-              "end": 4,
-              "children": []
-            },
-            {
-              "ty": "Whitespace",
-              "begin": 4,
-              "end": 5,
-              "children": []
+              "Cmd": [
+                {
+                  "Normal": "c"
+                }
+              ]
             }
           ]
-        },
-        {
-          "ty": "SequenceSymbol",
-          "begin": 5,
-          "end": 6,
-          "children": []
-        },
-        {
-          "ty": "Command",
-          "begin": 6,
-          "end": 8,
-          "children": [
-            {
-              "ty": "Whitespace",
-              "begin": 6,
-              "end": 7,
-              "children": []
-            },
-            {
-              "ty": "Word",
-              "begin": 7,
-              "end": 8,
-              "children": []
-            }
-          ]
-        }
+        ]
       ]
     }
   },
   {
     "input": "a | b | c",
-    "output": null
+    "output": {
+      "Redirect": [
+        {
+          "Cmd": [
+            {
+              "Normal": "a"
+            }
+          ]
+        },
+        [
+          [
+            "Stdout",
+            {
+              "Command": {
+                "Cmd": [
+                  {
+                    "Normal": "b"
+                  }
+                ]
+              }
+            }
+          ],
+          [
+            "Stdout",
+            {
+              "Command": {
+                "Cmd": [
+                  {
+                    "Normal": "c"
+                  }
+                ]
+              }
+            }
+          ]
+        ]
+      ]
+    }
   }
 ]
