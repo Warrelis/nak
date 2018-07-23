@@ -181,4 +181,13 @@ fn parse_simple() {
         ),
         redirect: None,
     });
+
+    let c = parse_command_simple(&Prefs::default(), "").unwrap();
+    assert_eq!(c, Shell::DoNothing);
+
+    let c = parse_command_simple(&Prefs::default(), "  ").unwrap();
+    assert_eq!(c, Shell::DoNothing);
 }
+
+
+
