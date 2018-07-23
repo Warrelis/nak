@@ -198,5 +198,131 @@
         ]
       ]
     }
+  },
+  {
+    "input": "a|b|c ; d|e|f ; g|h|i",
+    "output": {
+      "Sequence": [
+        {
+          "Redirect": [
+            {
+              "Cmd": [
+                {
+                  "Normal": "a"
+                }
+              ]
+            },
+            [
+              [
+                "Stdout",
+                {
+                  "Command": {
+                    "Cmd": [
+                      {
+                        "Normal": "b"
+                      }
+                    ]
+                  }
+                }
+              ],
+              [
+                "Stdout",
+                {
+                  "Command": {
+                    "Cmd": [
+                      {
+                        "Normal": "c"
+                      }
+                    ]
+                  }
+                }
+              ]
+            ]
+          ]
+        },
+        [
+          [
+            "Wait",
+            {
+              "Redirect": [
+                {
+                  "Cmd": [
+                    {
+                      "Normal": "d"
+                    }
+                  ]
+                },
+                [
+                  [
+                    "Stdout",
+                    {
+                      "Command": {
+                        "Cmd": [
+                          {
+                            "Normal": "e"
+                          }
+                        ]
+                      }
+                    }
+                  ],
+                  [
+                    "Stdout",
+                    {
+                      "Command": {
+                        "Cmd": [
+                          {
+                            "Normal": "f"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                ]
+              ]
+            }
+          ],
+          [
+            "Wait",
+            {
+              "Redirect": [
+                {
+                  "Cmd": [
+                    {
+                      "Normal": "g"
+                    }
+                  ]
+                },
+                [
+                  [
+                    "Stdout",
+                    {
+                      "Command": {
+                        "Cmd": [
+                          {
+                            "Normal": "h"
+                          }
+                        ]
+                      }
+                    }
+                  ],
+                  [
+                    "Stdout",
+                    {
+                      "Command": {
+                        "Cmd": [
+                          {
+                            "Normal": "i"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                ]
+              ]
+            }
+          ]
+        ]
+      ]
+    }
   }
 ]
