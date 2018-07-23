@@ -21,13 +21,11 @@ pub trait Reader {
     fn save_history(&mut self);
 }
 
-fn check_single_arg<'a>(items: impl Iterator<Item=Word>) -> Result<String, Error> {
+fn check_single_arg<'a>(items: impl Iterator<Item=String>) -> Result<String, Error> {
     let mut items = items;
     if let Some(i) = items.next() {
         if items.next().is_none() {
-            match i {
-                Word::Normal(s) => Ok(s)
-            }
+            Ok(i)
         } else {
             Err(format_err!("bad too many args"))
         }
@@ -37,24 +35,27 @@ fn check_single_arg<'a>(items: impl Iterator<Item=Word>) -> Result<String, Error
 }
 
 fn convert_single(prefs: &Prefs, cmd: Cmd) -> Result<Shell, Error> {
-    let mut it = cmd.0.into_iter();
-    let head = it.next().unwrap().expand_string();
+
+    let items = prefs.expand(cmd.0.into_iter().map(|w| w.expand_string()).collect());
+
+    let mut it = items.into_iter();
+    let head = it.next().unwrap();
 
     Ok(Shell::Run {
         cmd: match head.as_str() {
             "cd" => Command::SetDirectory(check_single_arg(it)?),
             "micro" => Command::Edit(check_single_arg(it)?), // TODO: make this a configurable alias instead
             "nak" => {
-                let head = it.next().unwrap().expand_string();
+                let head = it.next().unwrap();
 
                 return Ok(Shell::BeginRemote(Command::Unknown(
                     head,
-                    it.map(|i| i.expand_string()).collect(),
+                    it.collect(),
                 )));
             }
             _ => Command::Unknown(
                 head.to_string(),
-                it.map(|i| i.expand_string()).collect(),
+                it.collect(),
             )
         },
         redirect: None,
@@ -177,6 +178,18 @@ fn parse_simple() {
                 String::from("1"),
                 String::from("abc"),
                 String::from("2"),
+            ],
+        ),
+        redirect: None,
+    });
+    let c = parse_command_simple(&Prefs::git_alias_prefs(), "g c -am \"test message\"").unwrap();
+    assert_eq!(c, Shell::Run {
+        cmd: Command::Unknown(
+            String::from("git"),
+            vec![
+                String::from("commit"),
+                String::from("-am"),
+                String::from("test message"),
             ],
         ),
         redirect: None,

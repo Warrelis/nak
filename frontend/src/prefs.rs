@@ -107,3 +107,18 @@ impl Prefs {
         cmd
     }
 }
+
+
+#[cfg(test)]
+impl Prefs {
+    pub fn git_alias_prefs() -> Prefs {
+        Prefs {
+            aliases: vec![
+                Rule {
+                    find: vec![Item::Literal("g".into()), Item::Literal("c".into()), Item::Expando(0)],
+                    replace: vec![Item::Literal("git".into()), Item::Literal("commit".into()), Item::Expando(0)],
+                }
+            ],
+        }
+    }
+}

@@ -1,5 +1,13 @@
 [
   {
+    "input": "",
+    "output": "Empty"
+  },
+  {
+    "input": "  ",
+    "output": "Empty"
+  },
+  {
     "input": "a",
     "output": {
       "Cmd": [

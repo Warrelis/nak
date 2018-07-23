@@ -167,6 +167,10 @@ fn parse_seq(input: &mut Consume) -> Ast {
 fn parse_line(input: &mut Consume) -> Ast {
     skip_whitespace(input);
 
+    if input.cur().is_none() {
+        return Ast::Empty;
+    }
+
     let res = parse_seq(input);
 
     assert_eq!(input.pos, input.text.len());
