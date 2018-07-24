@@ -29,7 +29,7 @@ fn check_single_arg<'a>(items: impl Iterator<Item=String>) -> Result<String, Err
     }
 }
 
-fn convert_single(remotes: &Remotes, prefs: &Prefs, cmd: &Cmd) -> Result<Command, Error> {
+fn convert_single(_remotes: &Remotes, prefs: &Prefs, cmd: &Cmd) -> Result<Command, Error> {
 
     let items = prefs.expand(cmd.0.iter().map(|w| w.expand_string()).collect());
 
@@ -40,7 +40,7 @@ fn convert_single(remotes: &Remotes, prefs: &Prefs, cmd: &Cmd) -> Result<Command
         "cd" => Command::SetDirectory(check_single_arg(it)?),
         "micro" => Command::Edit(check_single_arg(it)?), // TODO: make this a configurable alias instead
         "nak" => {
-            let head = it.next().unwrap();
+            let _head = it.next().unwrap();
 
             panic!();
             // return Ok(Shell::BeginRemote(Command::Unknown(
@@ -58,8 +58,11 @@ fn convert_single(remotes: &Remotes, prefs: &Prefs, cmd: &Cmd) -> Result<Command
 fn convert_ast(remotes: &Remotes, prefs: &Prefs, ast: &Ast, plan: &mut PlanBuilder, mut stdout: usize, mut stderr: usize) -> Result<usize, Error> {
     Ok(match ast {
         Ast::Empty => stdout,
-        Ast::Cmd(cmd) =>
-            plan.add_command(*remotes.stack.last().unwrap(), convert_single(remotes, prefs, cmd)?, stdout, stderr),
+        Ast::Cmd(cmd) => {
+            let stdin = plan.pipe();
+            plan.add_command(*remotes.stack.last().unwrap(), convert_single(remotes, prefs, cmd)?, stdin, stdout, stderr);
+            stdin
+        }
         Ast::Sequence(_head, _clauses) => {
             panic!();
         }
@@ -90,12 +93,11 @@ fn parse_command_simple(remotes: &Remotes, prefs: &Prefs, input: &str) -> Result
 
     let mut p = PlanBuilder::new();
 
-    let stdout = p.stdout();
-    let stderr = p.stderr();
+    let stdout = p.pipe();
+    let stderr = p.pipe();
     let stdin = convert_ast(remotes, prefs, &cmd, &mut p, stdout, stderr)?;
-    p.set_stdin(stdin);
 
-    Ok(p.build())
+    Ok(p.build(Some(stdin), Some(stdout), Some(stderr)))
 }
 
 struct SimpleCompleter;
@@ -164,12 +166,12 @@ impl SimpleReader {
                 Ok(res) => res,
                 Err(e) => {
                     return match e.kind() {
-                        io::ErrorKind::Interrupted => Ok(PlanBuilder::new().build()),
+                        io::ErrorKind::Interrupted => Ok(Plan::empty()),
                         io::ErrorKind::UnexpectedEof => {
                             let mut p = PlanBuilder::new();
                             p.exit(RemoteRef(0));
 
-                            Ok(p.build())
+                            Ok(p.build(None, None, None))
                         }
                         _ => Err(e.into()),
                     }

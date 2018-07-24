@@ -1,4 +1,3 @@
-
 use std::sync::mpsc;
 use std::process as pr;
 use std::thread;
@@ -6,7 +5,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write, Read};
 use std::io;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use failure::Error;
 use os_pipe::{PipeWriter, IntoStdio};
@@ -46,7 +45,7 @@ impl Transport for PipeTransport {
 
 pub struct StackedRemotes {
     pub remotes: Vec<(RemoteId, RemoteInfo)>,
-    pub waiting_for: Option<ReadProcess>,
+    pub waiting_for: HashSet<ProcessId>,
     pub waiting_for_remote: Option<RemoteId>,
 }
 
@@ -63,8 +62,7 @@ impl<T: Transport> EndpointHandler<T> for StackedRemotes {
     }
 
     fn command_done(endpoint: &mut Endpoint<T, Self>, id: ProcessId, _exit_code: i64) -> Result<(), Error> {
-        assert_eq!(endpoint.handler.waiting_for.expect("no process waiting").id, id);
-        endpoint.handler.waiting_for = None;
+        assert!(endpoint.handler.waiting_for.remove(&id));
         Ok(())
     }
 
@@ -121,7 +119,7 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendEndpoint, Er
 
     let mut endpoint = Endpoint::new(
         PipeTransport { input: input_writer },
-        StackedRemotes { remotes: vec![], waiting_for: None, waiting_for_remote: None });
+        StackedRemotes { remotes: vec![], waiting_for: HashSet::new(), waiting_for_remote: None });
 
     let root = endpoint.root();
     endpoint.handler.waiting_for_remote = Some(root);
