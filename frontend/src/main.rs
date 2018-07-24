@@ -20,16 +20,18 @@ use std::sync::mpsc;
 
 use failure::Error;
 
-use protocol::{Response, RemoteId, Command, ReadProcess};
+use protocol::{Response, Command, ReadProcess};
 
 mod parse;
 mod edit;
 mod prefs;
 mod comm;
+mod plan;
 
 use prefs::Prefs;
 use comm::{BackendEndpoint, launch_backend, EndpointExt};
-use edit::{Reader, SimpleReader};
+use edit::{SimpleReader};
+use plan::{Plan, RemoteStep, Step};
 
 #[derive(Debug)]
 pub enum Event {
@@ -38,28 +40,7 @@ pub enum Event {
     CtrlC,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Step {
-    OpenOutputFile(String),
-    OpenInputFile(String),
-    Run(Command, ReadProcess),
-    BeginRemote(Command),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Plan {
-    steps: Vec<(RemoteId, Step)>,
-}
-
-impl Plan {
-    pub fn new() -> Plan {
-        Plan {
-            steps: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Shell {
     DoNothing,
     Run {
@@ -74,7 +55,7 @@ pub enum Shell {
 struct Exec {
     receiver: mpsc::Receiver<Event>,
     remote: BackendEndpoint,
-    reader: Box<dyn Reader>,
+    reader: SimpleReader,
 }
 
 impl Exec {
@@ -103,30 +84,48 @@ impl Exec {
                             top_remote.hostname,
                             top_remote.working_dir)
                     };
-                    let cmd = self.reader.get_command(prompt, &mut self.remote)?;
+                    let plan = self.reader.get_command(prompt, &mut self.remote)?;
 
-                    match cmd {
-                        Shell::Exit => {
-                            if self.remote.handler.remotes.len() > 1 {
-                                self.remote.end_remote()?;
-                            } else {
-                                return Ok(false)
+                    for step in plan.steps {
+                        match step {
+                            Step::Remote(_remote_id, RemoteStep::Run(cmd, _pr)) => {
+                                let res = self.remote.run(cmd, None)?;
+                                self.remote.handler.waiting_for = Some(res);
                             }
-                        }
-                        Shell::DoNothing => {}
-                        Shell::BeginRemote(cmd) => {
-                            self.remote.begin_remote(cmd)?;
-                        }
-                        Shell::Run { cmd, redirect } => {
-                            let res = self.remote.run(cmd, redirect)?;
-                            self.remote.handler.waiting_for = Some(res);
-                        }
-                        Shell::Plan(plan) => {
-                            // let res = self.remote.run(cmd, redirect)?;
-                            // self.remote.handler.waiting_for = Some(res);
-                            panic!();
+                            Step::Remote(_remote_id, RemoteStep::Close) => {
+                                if self.remote.handler.remotes.len() > 1 {
+                                    self.remote.end_remote()?;
+                                } else {
+                                    return Ok(false)
+                                }
+                            }
+                            _ => panic!()
                         }
                     }
+
+                    // match cmd {
+                    //     Shell::Exit => {
+                    //         if self.remote.handler.remotes.len() > 1 {
+                    //             self.remote.end_remote()?;
+                    //         } else {
+                    //             return Ok(false)
+                    //         }
+                    //     }
+                    //     Shell::DoNothing => {}
+                    //     Shell::BeginRemote(cmd) => {
+                    //         self.remote.begin_remote(cmd)?;
+                    //     }
+                    //     Shell::Run { cmd, redirect } => {
+                    //         let res = self.remote.run(cmd, redirect)?;
+                    //         self.remote.handler.waiting_for = Some(res);
+                    //     }
+                    //     Shell::Plan(plan) => {
+                    //         // let res = self.remote.run(cmd, redirect)?;
+                    //         // self.remote.handler.waiting_for = Some(res);
+                    //         panic!();
+                    //     }
+                    // }
+
                 }
                 Some(ReadProcess { id, .. }) => {
                     let msg = self.receiver.recv()?;
@@ -149,7 +148,7 @@ impl Exec {
     }
 }
 
-fn remote_run(receiver: mpsc::Receiver<Event>, remote: BackendEndpoint, reader: Box<dyn Reader>)
+fn remote_run(receiver: mpsc::Receiver<Event>, remote: BackendEndpoint, reader: SimpleReader)
     -> Result<(), Error>
 {
     let mut exec = Exec {
@@ -178,7 +177,7 @@ fn main() -> Result<(), Error> {
 
     let remote = launch_backend(sender)?;
 
-    remote_run(receiver, remote, Box::new(SimpleReader::new(prefs)?))?;
+    remote_run(receiver, remote, SimpleReader::new(prefs)?)?;
 
     Ok(())
 }

@@ -1,25 +1,20 @@
-use prefs::Prefs;
-use protocol::Command;
-use std::io::Write;
-use failure::Error;
-use parse::{Ast, Cmd, parse_input};
-use comm::BackendEndpoint;
-use liner;
+
+use std::io::{stdin, stdout, Write};
 use std::env;
 use std::io;
+
+use failure::Error;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
+use liner;
 use liner::{KeyMap, Editor, Buffer, KeyBindings, Emacs};
 use liner::EventHandler;
-use std::io::stdin;
-use std::io::stdout;
-use {Shell, Plan};
 
-
-pub trait Reader {
-    fn get_command(&mut self, prompt: String, backend: &BackendEndpoint) -> Result<Shell, Error>;
-    fn save_history(&mut self);
-}
+use comm::BackendEndpoint;
+use parse::{Ast, Cmd, parse_input, Target, Stream};
+use protocol::Command;
+use prefs::Prefs;
+use plan::{PlanBuilder, Plan, Remotes, RemoteRef};
 
 fn check_single_arg<'a>(items: impl Iterator<Item=String>) -> Result<String, Error> {
     let mut items = items;
@@ -34,49 +29,73 @@ fn check_single_arg<'a>(items: impl Iterator<Item=String>) -> Result<String, Err
     }
 }
 
-fn convert_single(prefs: &Prefs, cmd: Cmd) -> Result<Shell, Error> {
+fn convert_single(remotes: &Remotes, prefs: &Prefs, cmd: &Cmd) -> Result<Command, Error> {
 
-    let items = prefs.expand(cmd.0.into_iter().map(|w| w.expand_string()).collect());
+    let items = prefs.expand(cmd.0.iter().map(|w| w.expand_string()).collect());
 
     let mut it = items.into_iter();
     let head = it.next().unwrap();
 
-    Ok(Shell::Run {
-        cmd: match head.as_str() {
-            "cd" => Command::SetDirectory(check_single_arg(it)?),
-            "micro" => Command::Edit(check_single_arg(it)?), // TODO: make this a configurable alias instead
-            "nak" => {
-                let head = it.next().unwrap();
+    Ok(match head.as_str() {
+        "cd" => Command::SetDirectory(check_single_arg(it)?),
+        "micro" => Command::Edit(check_single_arg(it)?), // TODO: make this a configurable alias instead
+        "nak" => {
+            let head = it.next().unwrap();
 
-                return Ok(Shell::BeginRemote(Command::Unknown(
-                    head,
-                    it.collect(),
-                )));
-            }
-            _ => Command::Unknown(
-                head.to_string(),
-                it.collect(),
-            )
-        },
-        redirect: None,
+            panic!();
+            // return Ok(Shell::BeginRemote(Command::Unknown(
+            //     head,
+            //     it.collect(),
+            // )));
+        }
+        _ => Command::Unknown(
+            head.to_string(),
+            it.collect(),
+        )
     })
 }
 
-fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
-    let cmd = parse_input(input);
-
-    match cmd {
-        Ast::Empty => Ok(Shell::DoNothing),
-        Ast::Cmd(cmd) => convert_single(prefs, cmd),
+fn convert_ast(remotes: &Remotes, prefs: &Prefs, ast: &Ast, plan: &mut PlanBuilder, mut stdout: usize, mut stderr: usize) -> Result<usize, Error> {
+    Ok(match ast {
+        Ast::Empty => stdout,
+        Ast::Cmd(cmd) =>
+            plan.add_command(*remotes.stack.last().unwrap(), convert_single(remotes, prefs, cmd)?, stdout, stderr),
         Ast::Sequence(_head, _clauses) => {
-            // convert_single(prefs, head);
             panic!();
         }
         Ast::Redirect(head, clauses) => {
-            let mut p = Plan::new();
-            panic!();
+            for clause in clauses.iter().rev() {
+                let stdin = match &clause.1 {
+                    Target::File(path) => {
+                        plan.add_file_output(*remotes.stack.last().unwrap(), path.expand_string())
+                    }
+                    Target::Command(cmd) => {
+                        convert_ast(remotes, prefs, &cmd, plan, stdout, stderr)?
+                    }
+                };
+
+                match clause.0 {
+                    Stream::Stdout => stdout = stdin,
+                    Stream::Stderr => stderr = stdin,
+                }
+            }
+
+            convert_ast(remotes, prefs, head.as_ref(), plan, stdout, stderr)?
         }
-    }
+    })
+}
+
+fn parse_command_simple(remotes: &Remotes, prefs: &Prefs, input: &str) -> Result<Plan, Error> {
+    let cmd = parse_input(input);
+
+    let mut p = PlanBuilder::new();
+
+    let stdout = p.stdout();
+    let stderr = p.stderr();
+    let stdin = convert_ast(remotes, prefs, &cmd, &mut p, stdout, stderr)?;
+    p.set_stdin(stdin);
+
+    Ok(p.build())
 }
 
 struct SimpleCompleter;
@@ -116,8 +135,8 @@ impl SimpleReader {
     }
 }
 
-impl Reader for SimpleReader {
-    fn get_command(&mut self, prompt: String, _backend: &BackendEndpoint) -> Result<Shell, Error> {
+impl SimpleReader {
+    pub fn get_command(&mut self, prompt: String, _backend: &BackendEndpoint) -> Result<Plan, Error> {
 
         fn handle_keys<'a, T, W: Write, M: KeyMap<'a, W, T>>(
             mut keymap: M,
@@ -145,61 +164,83 @@ impl Reader for SimpleReader {
                 Ok(res) => res,
                 Err(e) => {
                     return match e.kind() {
-                        io::ErrorKind::Interrupted => Ok(Shell::DoNothing),
-                        io::ErrorKind::UnexpectedEof => Ok(Shell::Exit),
+                        io::ErrorKind::Interrupted => Ok(PlanBuilder::new().build()),
+                        io::ErrorKind::UnexpectedEof => {
+                            let mut p = PlanBuilder::new();
+                            p.exit(RemoteRef(0));
+
+                            Ok(p.build())
+                        }
                         _ => Err(e.into()),
                     }
                 }
             }
         };
+        let remotes = &Remotes {
+            stack: vec![RemoteRef(0)],
+        };
 
-        let parsed = parse_command_simple(&self.prefs, &res)?;
+        let parsed = parse_command_simple(&remotes, &self.prefs, &res)?;
 
-        match &parsed {
-            Shell::DoNothing => {}
-            _ => self.ctx.history.push(Buffer::from(res))?,
-        }
+        // match &parsed {
+        //     Shell::DoNothing => {}
+        //     _ => self.ctx.history.push(Buffer::from(res))?,
+        // }
+        self.ctx.history.push(Buffer::from(res))?;
 
         Ok(parsed)
     }
 
-    fn save_history(&mut self) {
+    pub fn save_history(&mut self) {
         self.ctx.history.commit_history()
     }
 }
 
 #[test]
 fn parse_simple() {
-    let c = parse_command_simple(&Prefs::default(), " test 1 abc 2").unwrap();
-    assert_eq!(c, Shell::Run {
-        cmd: Command::Unknown(
-            String::from("test"),
-            vec![
-                String::from("1"),
-                String::from("abc"),
-                String::from("2"),
-            ],
-        ),
-        redirect: None,
-    });
-    let c = parse_command_simple(&Prefs::git_alias_prefs(), "g c -am \"test message\"").unwrap();
-    assert_eq!(c, Shell::Run {
-        cmd: Command::Unknown(
-            String::from("git"),
-            vec![
-                String::from("commit"),
-                String::from("-am"),
-                String::from("test message"),
-            ],
-        ),
-        redirect: None,
-    });
+    // let c = parse_command_simple(&Prefs::default(), " test 1 abc 2").unwrap();
+    // assert_eq!(c, Plan {
+    //     cmd: Command::Unknown(
+    //         String::from("test"),
+    //         vec![
+    //             String::from("1"),
+    //             String::from("abc"),
+    //             String::from("2"),
+    //         ],
+    //     ),
+    //     redirect: None,
+    // });
+    // let c = parse_command_simple(&Prefs::git_alias_prefs(), "g c -am \"test message\"").unwrap();
+    // assert_eq!(c, Shell::Run {
+    //     cmd: Command::Unknown(
+    //         String::from("git"),
+    //         vec![
+    //             String::from("commit"),
+    //             String::from("-am"),
+    //             String::from("test message"),
+    //         ],
+    //     ),
+    //     redirect: None,
+    // });
 
-    let c = parse_command_simple(&Prefs::default(), "").unwrap();
-    assert_eq!(c, Shell::DoNothing);
+    let remotes = &Remotes {
+        stack: vec![RemoteRef(0)],
+    };
 
-    let c = parse_command_simple(&Prefs::default(), "  ").unwrap();
-    assert_eq!(c, Shell::DoNothing);
+    let p = parse_command_simple(remotes, &Prefs::default(), "").unwrap();
+    assert_eq!(p, Plan::empty());
+
+    let p = parse_command_simple(remotes, &Prefs::default(), "  ").unwrap();
+    assert_eq!(p, Plan::empty());
+
+    let p = parse_command_simple(remotes, &Prefs::default(), "a").unwrap();
+    assert_eq!(p, Plan::single(RemoteRef(0), vec![String::from("a")], None));
+
+    let p = parse_command_simple(remotes, &Prefs::default(), "a b c").unwrap();
+    assert_eq!(p, Plan::single(RemoteRef(0), vec![String::from("a"), String::from("b"), String::from("c")], None));
+
+    let p = parse_command_simple(remotes, &Prefs::default(), "a>b").unwrap();
+    // assert_eq!(p, Plan::single(RemoteRef(0), vec![String::from("a")], Some((RemoteRef(0), String::from("b")))));
 }
 
 

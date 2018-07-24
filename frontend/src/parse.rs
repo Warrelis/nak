@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Stream {
@@ -18,9 +17,9 @@ pub enum Word {
 }
 
 impl Word {
-    pub fn expand_string(self) -> String {
+    pub fn expand_string(&self) -> String {
         match self {
-            Word::Normal(s) => s,
+            Word::Normal(ref s) => s.to_string(),
         }
     }
 }

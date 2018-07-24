@@ -72,7 +72,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         Endpoint {
             trans,
             handler,
-            ids: Ids { next_id: 1 },
+            ids: Ids::new(),
             remotes,
             jobs: HashMap::new(),
             pipes: HashSet::new(),
@@ -111,7 +111,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
     pub fn remote(&mut self, remote: RemoteId, command: Command) -> Result<RemoteId, Error> {
         assert!(self.remotes.contains_key(&remote));
 
-        let id = self.ids.next_id();
+        let id = self.ids.next();
 
         self.trans.send(&ser_to_endpoint(remote, RemoteRequest::BeginRemote {
             id,
@@ -130,20 +130,20 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
     pub fn command(&mut self, remote: RemoteId, command: Command, block_for: HashMap<ProcessId, Condition>, redirect: Option<Handle>) -> Result<ReadProcess, Error> {
         assert!(self.remotes.contains_key(&remote));
 
-        let id = ProcessId(self.ids.next_id());
-        let stdin_pipe = self.ids.next_id();
+        let id = ProcessId(self.ids.next());
+        let stdin_pipe = self.ids.next();
         let stdout_pipe = match redirect {
             Some(h) => {
                 assert!(self.pipes.remove(&h.0));
                 h.0
             }
             None => {
-                let id = self.ids.next_id();
+                let id = self.ids.next();
                 self.pipes.insert(id);
                 id
             }
         };
-        let stderr_pipe = self.ids.next_id();
+        let stderr_pipe = self.ids.next();
 
         self.pipes.insert(stderr_pipe);
 
@@ -173,7 +173,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
     pub fn open_file(&mut self, remote: RemoteId, path: String) -> Result<Handle, Error> {
         assert!(self.remotes.contains_key(&remote));
 
-        let id = self.ids.next_id();
+        let id = self.ids.next();
 
         self.pipes.insert(id);
 

@@ -8,8 +8,6 @@ mod comm;
 
 use std::collections::{HashMap, HashSet};
 
-use failure::Error;
-
 pub use comm::{
     EndpointHandler,
     Endpoint,
@@ -175,12 +173,18 @@ struct RemoteState {
     parent: Option<RemoteId>,
 }
 
-struct Ids {
+pub struct Ids {
     next_id: usize
 }
 
 impl Ids {
-    fn next_id(&mut self) -> usize {
+    pub fn new() -> Ids {
+        Ids {
+            next_id: 0,
+        }
+    }
+
+    pub fn next(&mut self) -> usize {
         let res = self.next_id;
         self.next_id += 1;
         res
