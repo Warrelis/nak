@@ -64,6 +64,18 @@ pub struct ReadPipe(usize);
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct WritePipe(usize);
 
+pub struct ReadPipes {
+    pub stdin: WritePipe,
+    pub stdout: ReadPipe,
+    pub stderr: ReadPipe,
+}
+
+pub struct WritePipes {
+    pub stdin: ReadPipe,
+    pub stdout: WritePipe,
+    pub stderr: WritePipe,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WriteProcess {
     pub id: ProcessId,
@@ -164,9 +176,6 @@ pub enum RemoteResponse {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct RemoteId(usize);
-
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct Handle(usize);
 
 #[derive(Clone)]
 struct RemoteState {

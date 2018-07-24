@@ -99,6 +99,9 @@ impl Exec {
                                     return Ok(false)
                                 }
                             }
+                            Step::Remote(_remote_id, RemoteStep::OpenOutputFile(path)) => {
+                                // let handle = self.remote.
+                            }
                             _ => panic!()
                         }
                     }

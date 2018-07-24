@@ -27,6 +27,7 @@ use protocol::{
     ReadPipe,
     ReadProcess,
     RemoteInfo,
+    WritePipes,
 };
 
 use Event;
@@ -174,12 +175,31 @@ impl EndpointExt for BackendEndpoint {
     fn run(&mut self, c: Command, redirect: Option<String>) -> Result<ReadProcess, Error> {
         let cur_remote = self.cur_remote();
 
+        let (stderr_read, stderr_write) = self.pipe();
+        let (stdin_read, stdin_write) = self.pipe();
         if let Some(redirect) = redirect {
-            let handle = self.open_file(cur_remote, redirect)?;
-            Ok(self.command(cur_remote, c, HashMap::new(), Some(handle))?)
-
+            let stdout_write = self.open_file(cur_remote, redirect)?;
+            let (stdout_read, _) = self.pipe();
+            let id = self.command(cur_remote, c, HashMap::new(), WritePipes {
+                stdin: stdin_read, stdout: stdout_write, stderr: stderr_write
+            })?;
+            Ok(ReadProcess {
+                id,
+                stdin: stdin_write,
+                stdout: stdout_read,
+                stderr: stderr_read,
+            })
         } else {
-            Ok(self.command(cur_remote, c, HashMap::new(), None)?)
+            let (stdout_read, stdout_write) = self.pipe();
+            let id = self.command(cur_remote, c, HashMap::new(), WritePipes {
+                stdin: stdin_read, stdout: stdout_write, stderr: stderr_write
+            })?;
+            Ok(ReadProcess {
+                id,
+                stdin: stdin_write,
+                stdout: stdout_read,
+                stderr: stderr_read,
+            })
         }
     }
 

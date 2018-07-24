@@ -9,8 +9,7 @@ use {
     WritePipe,
     WriteProcess,
     ReadPipe,
-    ReadProcess,
-    Handle,
+    WritePipes,
     RemoteInfo,
     RemoteResponse,
     RemoteRequest,
@@ -127,31 +126,22 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         Ok(RemoteId(id))
     }
 
-    pub fn command(&mut self, remote: RemoteId, command: Command, block_for: HashMap<ProcessId, Condition>, redirect: Option<Handle>) -> Result<ReadProcess, Error> {
+    pub fn pipe(&mut self) -> (ReadPipe, WritePipe) {
+        let id = self.ids.next();
+        self.pipes.insert(id);
+        (ReadPipe(id), WritePipe(id))
+    }
+
+    pub fn command(&mut self, remote: RemoteId, command: Command, block_for: HashMap<ProcessId, Condition>, pipes: WritePipes) -> Result<ProcessId, Error> {
         assert!(self.remotes.contains_key(&remote));
 
         let id = ProcessId(self.ids.next());
-        let stdin_pipe = self.ids.next();
-        let stdout_pipe = match redirect {
-            Some(h) => {
-                assert!(self.pipes.remove(&h.0));
-                h.0
-            }
-            None => {
-                let id = self.ids.next();
-                self.pipes.insert(id);
-                id
-            }
-        };
-        let stderr_pipe = self.ids.next();
-
-        self.pipes.insert(stderr_pipe);
 
         let process = AbstractProcess {
             id,
-            stdin: stdin_pipe,
-            stdout: stdout_pipe,
-            stderr: stderr_pipe,
+            stdin: pipes.stdin.0,
+            stdout: pipes.stdout.0,
+            stderr: pipes.stderr.0,
         };
 
         self.trans.send(&ser_to_endpoint(remote, RemoteRequest::BeginCommand {
@@ -162,15 +152,10 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
         self.jobs.insert(id, ProcessState { parent: remote });
 
-        Ok(ReadProcess {
-            id,
-            stdin: WritePipe(stdin_pipe),
-            stdout: ReadPipe(stdout_pipe),
-            stderr: ReadPipe(stderr_pipe),
-        })
+        Ok(id)
     }
 
-    pub fn open_file(&mut self, remote: RemoteId, path: String) -> Result<Handle, Error> {
+    pub fn open_file(&mut self, remote: RemoteId, path: String) -> Result<WritePipe, Error> {
         assert!(self.remotes.contains_key(&remote));
 
         let id = self.ids.next();
@@ -182,7 +167,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
             path,
         }))?;
 
-        Ok(Handle(id))
+        Ok(WritePipe(id))
     }
 
     pub fn close_remote(&mut self, remote: RemoteId) -> Result<(), Error> {
