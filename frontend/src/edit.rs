@@ -1,9 +1,8 @@
 use prefs::Prefs;
-use Shell;
 use protocol::Command;
 use std::io::Write;
 use failure::Error;
-use parse::{Ast, Word, Cmd, parse_input};
+use parse::{Ast, Cmd, parse_input};
 use comm::BackendEndpoint;
 use liner;
 use std::env;
@@ -14,6 +13,7 @@ use liner::{KeyMap, Editor, Buffer, KeyBindings, Emacs};
 use liner::EventHandler;
 use std::io::stdin;
 use std::io::stdout;
+use {Shell, Plan};
 
 
 pub trait Reader {
@@ -72,8 +72,8 @@ fn parse_command_simple(prefs: &Prefs, input: &str) -> Result<Shell, Error> {
             // convert_single(prefs, head);
             panic!();
         }
-        Ast::Redirect(_head, _clauses) => {
-            // convert_single(prefs, head);
+        Ast::Redirect(head, clauses) => {
+            let mut p = Plan::new();
             panic!();
         }
     }

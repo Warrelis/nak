@@ -20,7 +20,7 @@ use std::sync::mpsc;
 
 use failure::Error;
 
-use protocol::{Response, Command, ReadProcess};
+use protocol::{Response, RemoteId, Command, ReadProcess};
 
 mod parse;
 mod edit;
@@ -39,12 +39,34 @@ pub enum Event {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum Step {
+    OpenOutputFile(String),
+    OpenInputFile(String),
+    Run(Command, ReadProcess),
+    BeginRemote(Command),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    steps: Vec<(RemoteId, Step)>,
+}
+
+impl Plan {
+    pub fn new() -> Plan {
+        Plan {
+            steps: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Shell {
     DoNothing,
     Run {
         cmd: Command,
         redirect: Option<String>,
     },
+    Plan(Plan),
     BeginRemote(Command),
     Exit,
 }
@@ -98,6 +120,11 @@ impl Exec {
                         Shell::Run { cmd, redirect } => {
                             let res = self.remote.run(cmd, redirect)?;
                             self.remote.handler.waiting_for = Some(res);
+                        }
+                        Shell::Plan(plan) => {
+                            // let res = self.remote.run(cmd, redirect)?;
+                            // self.remote.handler.waiting_for = Some(res);
+                            panic!();
                         }
                     }
                 }
