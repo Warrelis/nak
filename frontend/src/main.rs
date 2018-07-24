@@ -17,10 +17,11 @@ extern crate tempfile;
 extern crate protocol;
 
 use std::sync::mpsc;
+use std::collections::{HashMap, HashSet};
 
 use failure::Error;
 
-use protocol::{Response, Command, ReadProcess};
+use protocol::{Response, Command, ReadProcess, WritePipes};
 
 mod parse;
 mod edit;
@@ -84,13 +85,28 @@ impl Exec {
                             top_remote.hostname,
                             top_remote.working_dir)
                     };
+
                     let plan = self.reader.get_command(prompt, &mut self.remote)?;
+
+                    let mut pipe_pairs = Vec::new();
+
+                    let mut wait = HashSet::new();
 
                     for step in plan.steps {
                         match step {
-                            Step::Remote(_remote_id, RemoteStep::Run(cmd, _pr)) => {
-                                let res = self.remote.run(cmd, None)?;
-                                self.remote.handler.waiting_for = Some(res);
+                            Step::Pipe => {
+                                let (r, w) = self.remote.pipe();
+                                pipe_pairs.push((Some(r), Some(w)));
+                            }
+                            Step::Remote(_remote_id, RemoteStep::Run(cmd, pr)) => {
+                                let remote = self.remote.cur_remote();
+                                let stdout = pipe_pairs[pr.stdout].1.take().unwrap();
+                                let stderr = pipe_pairs[pr.stderr].1.take().unwrap();
+                                let stdin = pipe_pairs[pr.stdin].0.take().unwrap();
+                                let pid = self.remote.command(remote, cmd, HashMap::new(), WritePipes {
+                                    stdin, stdout, stderr
+                                })?;
+                                wait.insert(pid);
                             }
                             Step::Remote(_remote_id, RemoteStep::Close) => {
                                 if self.remote.handler.remotes.len() > 1 {
@@ -100,11 +116,17 @@ impl Exec {
                                 }
                             }
                             Step::Remote(_remote_id, RemoteStep::OpenOutputFile(path)) => {
+                                let remote = self.remote.cur_remote();
+
+                                let handle = self.remote.open_file(remote, path)?;
+                                pipe_pairs.push((None, Some(handle)));
                                 // let handle = self.remote.
                             }
                             _ => panic!()
                         }
                     }
+
+                    self.remote.handler.waiting_for = Some(res);
 
                     // match cmd {
                     //     Shell::Exit => {

@@ -11,9 +11,9 @@ pub struct Remotes {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanProcess {
     id: usize,
-    stdin: usize,
-    stdout: usize,
-    stderr: usize,
+    pub stdin: usize,
+    pub stdout: usize,
+    pub stderr: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,6 +28,7 @@ pub enum RemoteStep {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
     Remote(RemoteRef, RemoteStep),
+    Pipe,
     Pager,
     Editor,
 }
