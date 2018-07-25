@@ -49,7 +49,7 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
         }
     }
 
-    pub fn enqueue(&mut self, new_pid: Id, cmd: Cmd, block_for: HashMap<Id, Condition>) -> Option<Task<Id, Cmd>> {
+    pub fn enqueue(&mut self, new_pid: Id, cmd: Cmd, block_for: HashMap<Id, Condition>) -> Vec<Task<Id, Cmd>> {
         assert!(
             !self.finished.contains_key(&new_pid) &&
             !self.to_run.contains(&new_pid) &&
@@ -62,7 +62,7 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
             if let Some(&status) = self.finished.get(&existing_pid) {
                 match cond {
                     Some(expected) => if expected != status {
-                        return Some(Task::ConditionFailed(new_pid, cmd));
+                        return vec![Task::ConditionFailed(new_pid, cmd)];
                     }
                     None => {}
                 }
@@ -78,7 +78,7 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
 
         if still_needs_to_block_for.len() == 0 {
             self.to_run.insert(new_pid);
-            Some(Task::Start(new_pid, cmd))
+            vec![Task::Start(new_pid, cmd)]
         } else {
             for (&existing_pid, &cond) in &still_needs_to_block_for {
                 self.check_on_completed.entry(existing_pid).or_insert_with(Vec::new).push((cond, new_pid));
@@ -87,7 +87,7 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
                 cmd,
                 conditions: still_needs_to_block_for
             });
-            None
+            vec![]
         }
     }
 
@@ -97,20 +97,24 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
         self.running.insert(pid, state);
     }
 
-    pub fn start_completed(&mut self, pid: Id, status: ExitStatus) {
+    pub fn start_completed(&mut self, pid: Id, status: ExitStatus) -> Vec<Task<Id, Cmd>> {
         assert!(self.to_run.remove(&pid));
 
         self.finished.insert(pid, status);
+        self.resolve_tasks(pid, status)
     }
 
     pub fn completed(&mut self, pid: Id, status: ExitStatus) -> Vec<Task<Id, Cmd>> {
-        let mut tasks = Vec::new();
 
         assert!(self.running.contains_key(&pid));
 
         self.running.remove(&pid);
         self.finished.insert(pid, status);
+        self.resolve_tasks(pid, status)
+    }
 
+    fn resolve_tasks(&mut self, pid: Id, status: ExitStatus) -> Vec<Task<Id, Cmd>> {
+        let mut tasks = Vec::new();
         if let Some(blocked) = self.check_on_completed.remove(&pid) {
             for (cond, waiting_pid) in blocked {
                 let mut waiting = self.waiting_on.remove(&waiting_pid).expect("must be waiting");
@@ -157,19 +161,19 @@ mod tests {
     fn test_machine() {
         let mut m = Machine::new();
 
-        assert_eq!(m.enqueue(0, "a", wait(&[])), Some(Task::Start(0, "a")));
+        assert_eq!(m.enqueue(0, "a", wait(&[])), vec![Task::Start(0, "a")]);
 
         use ExitStatus::*;
 
-        assert_eq!(m.enqueue(1, "b", wait(&[(0, None)])), None);
+        assert_eq!(m.enqueue(1, "b", wait(&[(0, None)])), vec![]);
         m.start(0, "waffle");
         assert_eq!(m.completed(0, ExitStatus::Success), vec![Task::Start(1, "b")]);
      
-        assert_eq!(m.enqueue(2, "c", wait(&[(0, None)])), Some(Task::Start(2, "c")));
-        assert_eq!(m.enqueue(3, "d", wait(&[(0, Some(Success))])), Some(Task::Start(3, "d")));
-        assert_eq!(m.enqueue(4, "e", wait(&[(0, Some(Failure))])), Some(Task::ConditionFailed(4, "e")));
-        assert_eq!(m.enqueue(5, "f", wait(&[(2, Some(Success)), (3, Some(Success))])), None);
-        assert_eq!(m.enqueue(6, "g", wait(&[(2, Some(Success))])), None);
+        assert_eq!(m.enqueue(2, "c", wait(&[(0, None)])), vec![Task::Start(2, "c")]);
+        assert_eq!(m.enqueue(3, "d", wait(&[(0, Some(Success))])), vec![Task::Start(3, "d")]);
+        assert_eq!(m.enqueue(4, "e", wait(&[(0, Some(Failure))])), vec![Task::ConditionFailed(4, "e")]);
+        assert_eq!(m.enqueue(5, "f", wait(&[(2, Some(Success)), (3, Some(Success))])), vec![]);
+        assert_eq!(m.enqueue(6, "g", wait(&[(2, Some(Success))])), vec![]);
      
         m.start(2, "badger");
         assert_eq!(m.completed(2, ExitStatus::Success), vec![Task::Start(6, "g")]);

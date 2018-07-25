@@ -20,6 +20,7 @@ pub use comm::{
 pub enum Command {
     Unknown(String, Vec<String>),
     SetDirectory(String),
+    GetDirectory,
     Edit(String),
 }
 
@@ -30,6 +31,7 @@ impl Command {
                 args.extend(new_args)
             }
             &mut Command::SetDirectory(_) |
+            &mut Command::GetDirectory |
             &mut Command::Edit(_) => panic!(),
         }
     }

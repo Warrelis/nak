@@ -47,6 +47,9 @@ pub struct StackedRemotes {
     pub remotes: Vec<(RemoteId, RemoteInfo)>,
     pub waiting_for: HashSet<ProcessId>,
     pub waiting_for_remote: Option<RemoteId>,
+    pub gathering_output: HashMap<ReadPipe, Vec<u8>>,
+    pub cwd_for_remote: HashMap<RemoteId, ReadPipe>,
+
 }
 
 impl<T: Transport> EndpointHandler<T> for StackedRemotes {
@@ -57,8 +60,13 @@ impl<T: Transport> EndpointHandler<T> for StackedRemotes {
         Ok(())
     }
 
-    fn pipe(_endpoint: &mut Endpoint<T, Self>, _id: ReadPipe, data: Vec<u8>) -> Result<(), Error> {
-        Ok(io::stdout().write_all(&data)?)
+    fn pipe(endpoint: &mut Endpoint<T, Self>, id: ReadPipe, data: Vec<u8>) -> Result<(), Error> {
+        if let Some(out) = endpoint.handler.gathering_output.get_mut(&id) {
+            out.extend(data)
+        } else {
+            io::stdout().write_all(&data)?;
+        }
+        Ok(())
     }
 
     fn command_done(endpoint: &mut Endpoint<T, Self>, id: ProcessId, _exit_code: i64) -> Result<(), Error> {
@@ -117,9 +125,17 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendEndpoint, Er
         unsafe { libc::exit(0) };
     }
 
+    let stacked_remotes = StackedRemotes {
+        remotes: vec![],
+        waiting_for: HashSet::new(),
+        waiting_for_remote: None,
+        gathering_output: HashMap::new(),
+        cwd_for_remote: HashMap::new(),
+    };
+
     let mut endpoint = Endpoint::new(
         PipeTransport { input: input_writer },
-        StackedRemotes { remotes: vec![], waiting_for: HashSet::new(), waiting_for_remote: None });
+        stacked_remotes);
 
     let root = endpoint.root();
     endpoint.handler.waiting_for_remote = Some(root);

@@ -123,7 +123,7 @@ pub struct AsyncBackendHandler {
     waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>,
     subbackends: HashMap<usize, BackendRemote>,
     open_files: HashMap<WritePipe, File>,
-    machine: Machine<ProcessId, RunCmd, ProcessState>,
+    machine: Arc<Mutex<Machine<ProcessId, RunCmd, ProcessState>>>,
 }
 
 impl AsyncBackendHandler {
@@ -134,36 +134,62 @@ impl AsyncBackendHandler {
             waiting_edits: Default::default(),
             subbackends: Default::default(),
             open_files: Default::default(),
-            machine: Machine::new(),
+            machine: Arc::new(Mutex::new(Machine::new())),
         }
     }
 
-    fn enqueue(&mut self, id: ProcessId, cmd: RunCmd, block_for: HashMap<ProcessId, Condition>) -> Result<(), Error> {
-        let tasks = self.machine.enqueue(id, cmd, block_for);
+    fn process_tasks(&mut self, mut tasks: Vec<Task<ProcessId, RunCmd>>) -> Result<(), Error> {
+        loop {
+            let mut new_tasks = Vec::new();
 
-        for t in tasks {
-            match t {
-                Task::Start(pid, cmd) => {
-                    match self.run(pid, cmd.stdout, cmd.stderr, cmd.cmd) {
-                        Ok(RunResult::Process(state)) => self.machine.start(pid, state),
-                        Ok(RunResult::AlreadyDone(status)) => self.machine.start_completed(pid, status),
-                        Err(e) => {
-                            self.machine.start_completed(pid, ExitStatus::Failure);
+            for t in tasks {
+                match t {
+                    Task::Start(pid, cmd) => {
+                        match self.run(pid, cmd.stdout, cmd.stderr, cmd.cmd) {
+                            Ok(RunResult::Process(state)) => self.machine.lock().unwrap().start(pid, state),
+                            Ok(RunResult::AlreadyDone(status)) => {
+                                new_tasks.extend(
+                                    self.machine.lock().unwrap().start_completed(pid, status));
+                            }
+                            Err(e) => {
+                                new_tasks.extend(
+                                    self.machine.lock().unwrap().start_completed(pid, ExitStatus::Failure));
 
-                            let mut back = self.backtraffic.lock().unwrap();
-                            let text = format!("{:?}", e);
-                            back.pipe(cmd.stderr, text.into_bytes())?;
-                            back.command_done(pid, 1)?;
+                                let mut back = self.backtraffic.lock().unwrap();
+                                let text = format!("{:?}", e);
+                                back.pipe(cmd.stderr, text.into_bytes())?;
+                                back.command_done(pid, 1)?;
+                            }
                         }
                     }
-                }
-                Task::ConditionFailed(pid, _) => {
-                    self.backtraffic.lock().unwrap().command_done(pid, 1).unwrap();
+                    Task::ConditionFailed(pid, _) => {
+                        self.backtraffic.lock().unwrap().command_done(pid, 1).unwrap();
+                    }
                 }
             }
+
+            if new_tasks.len() == 0 {
+                break;
+            }
+
+            tasks = new_tasks;
         }
 
         Ok(())
+    }
+
+    fn finished(&mut self, id: ProcessId, exit_code: i64) -> Result<(), Error> {
+        let tasks = self.machine.lock().unwrap().completed(id, if exit_code == 0 {
+            ExitStatus::Success
+        } else {
+            ExitStatus::Failure
+        });
+        self.process_tasks(tasks)
+    }
+
+    fn enqueue(&mut self, id: ProcessId, cmd: RunCmd, block_for: HashMap<ProcessId, Condition>) -> Result<(), Error> {
+        let tasks = self.machine.lock().unwrap().enqueue(id, cmd, block_for);
+        self.process_tasks(tasks)
     }
 
     fn run(&mut self, id: ProcessId, stdout_pipe: WritePipe, stderr_pipe: WritePipe, c: Command) -> Result<RunResult, Error> {
@@ -264,6 +290,11 @@ impl AsyncBackendHandler {
                 thread::spawn(move || {
                     let exit_code = cancel_handle.lock().unwrap().wait().unwrap().code().unwrap_or(-1);
                     eprintln!("{:?} exit {}", id, exit_code);
+                    self.machine.lock().unwrap().completed(id, if exit_code == 0 {
+                        ExitStatus::Success
+                    } else {
+                        ExitStatus::Failure
+                    });
                     is_running_clone.store(false, Ordering::SeqCst);
 
                     if let Some(t) = stdout_thread {
@@ -284,14 +315,30 @@ impl AsyncBackendHandler {
                 let mut back = self.backtraffic.lock().unwrap();
                 match env::set_current_dir(dir) {
                     Ok(_) => {
-                        back.command_done(id, 1)?;
+                        back.command_done(id, 0)?;
+                        Ok(RunResult::AlreadyDone(ExitStatus::Success))
                     }
                     Err(e) => {
                         back.pipe(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
                         back.command_done(id, 1)?;
+                        Ok(RunResult::AlreadyDone(ExitStatus::Failure))
                     }
                 }
-                Ok(RunResult::AlreadyDone(ExitStatus::Success))
+            }
+            Command::GetDirectory => {
+                let mut back = self.backtraffic.lock().unwrap();
+                match env::current_dir() {
+                    Ok(dir) => {
+                        back.pipe(stdout_pipe, format!("{}\n", dir.display()).into_bytes())?;
+                        back.command_done(id, 0)?;
+                        Ok(RunResult::AlreadyDone(ExitStatus::Success))
+                    }
+                    Err(e) => {
+                        back.pipe(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
+                        back.command_done(id, 1)?;
+                        Ok(RunResult::AlreadyDone(ExitStatus::Failure))
+                    }
+                }
             }
             Command::Edit(path) => {
                 let (sender, receiver) = mpsc::channel();

@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use failure::Error;
 
-use protocol::{Response, Command, WritePipes, ProcessId};
+use protocol::{Response, Command, WritePipes, ProcessId, Condition};
 
 mod parse;
 mod edit;
@@ -76,6 +76,18 @@ impl Exec {
                 }
             }
         } else {
+            for (remote, stream_id) in self.remote.handler.cwd_for_remote.drain() {
+
+                let result = self.remote.handler.gathering_output.remove(&stream_id).unwrap();
+
+                for (id, rem) in self.remote.handler.remotes.iter_mut() {
+                    if *id == remote {
+                        rem.working_dir = String::from_utf8(result).unwrap();
+                        break;
+                    }
+                }
+            }
+
             if self.remote.handler.waiting_for.len() == 0 {
                 let prompt = {
                     let top_remote = &self.remote.handler.remotes.last().unwrap().1;
@@ -125,30 +137,28 @@ impl Exec {
                     }
                 }
 
-                self.remote.handler.waiting_for = wait;
+                {
+                    let remote = self.remote.cur_remote();
+                    let (stdout_read, stdout_write) = self.remote.pipe();
+                    let (_stderr_read, stderr_write) = self.remote.pipe();
+                    let (stdin_read, _stdin_write) = self.remote.pipe();
+                    let mut block_on: HashMap<ProcessId, Condition> = wait.iter().map(|&pid| (pid, None)).collect();
 
-                // match cmd {
-                //     Shell::Exit => {
-                //         if self.remote.handler.remotes.len() > 1 {
-                //             self.remote.end_remote()?;
-                //         } else {
-                //             return Ok(false)
-                //         }
-                //     }
-                //     Shell::DoNothing => {}
-                //     Shell::BeginRemote(cmd) => {
-                //         self.remote.begin_remote(cmd)?;
-                //     }
-                //     Shell::Run { cmd, redirect } => {
-                //         let res = self.remote.run(cmd, redirect)?;
-                //         self.remote.handler.waiting_for = Some(res);
-                //     }
-                //     Shell::Plan(plan) => {
-                //         // let res = self.remote.run(cmd, redirect)?;
-                //         // self.remote.handler.waiting_for = Some(res);
-                //         panic!();
-                //     }
-                // }
+                    let pid = self.remote.command(remote, Command::GetDirectory, block_on, WritePipes {
+                        stdin: stdin_read,
+                        stdout: stdout_write,
+                        stderr: stderr_write,
+                    })?;
+
+                    self.remote.handler.gathering_output.insert(stdout_read, Vec::new());
+
+                    self.remote.handler.cwd_for_remote.insert(remote, stdout_read);
+
+                    wait.insert(pid);
+                }
+
+                assert!(self.remote.handler.waiting_for.len() == 0);
+                self.remote.handler.waiting_for = wait;
 
             } else {
                 let msg = self.receiver.recv()?;
