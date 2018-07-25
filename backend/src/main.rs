@@ -51,7 +51,6 @@ use protocol::{
     Request,
     Command,
     WriteProcess,
-    ReadPipe,
     WritePipe,
     BackendHandler,
     Transport,
@@ -62,7 +61,7 @@ use protocol::{
     RemoteInfo,
 };
 
-use machine::{Machine, Task, Status};
+use exec::{Exec, RunCmd};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditRequest {
@@ -99,23 +98,18 @@ impl Transport for StdoutTransport {
     }
 }
 
-struct RunCmd {
-    cmd: Command,
-    stdin: ReadPipe,
-    stdout: WritePipe,
-    stderr: WritePipe,
+pub struct ExecHandler {
+    backtraffic: Arc<Mutex<Backend<StdoutTransport>>>,
 }
 
-enum ProcessState {
-    Running {
-        cancel: mpsc::Sender<()>,
-    },
-    AwaitingEdit,
-}
+impl exec::Handler for ExecHandler {
+    fn pipe_output(&mut self, pipe: WritePipe, data: Vec<u8>) -> Result<(), Error> {
+        self.backtraffic.lock().unwrap().pipe(pipe, data)
+    }
 
-enum RunResult {
-    Process(ProcessState),
-    AlreadyDone(ExitStatus),
+    fn command_result(&mut self, pid: ProcessId, exit_code: i64) -> Result<(), Error> {
+        self.backtraffic.lock().unwrap().command_done(pid, exit_code)
+    }
 }
 
 pub struct AsyncBackendHandler {
@@ -123,256 +117,21 @@ pub struct AsyncBackendHandler {
     running_commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
     waiting_edits: Arc<Mutex<HashMap<usize, mpsc::Sender<Vec<u8>>>>>,
     subbackends: HashMap<usize, BackendRemote>,
-    open_files: HashMap<WritePipe, File>,
-    machine: Arc<Mutex<Machine<ProcessId, RunCmd, ProcessState>>>,
+    exec: Exec,
 }
 
 impl AsyncBackendHandler {
     fn new() -> AsyncBackendHandler {
+        let backtraffic = Arc::new(Mutex::new(Backend::new(StdoutTransport)));
+        let exec = Exec::new(Box::new(ExecHandler {
+            backtraffic: backtraffic.clone(),
+        }));
         AsyncBackendHandler {
-            backtraffic: Arc::new(Mutex::new(Backend::new(StdoutTransport))),
+            backtraffic,
             running_commands: Default::default(),
             waiting_edits: Default::default(),
             subbackends: Default::default(),
-            open_files: Default::default(),
-            machine: Arc::new(Mutex::new(Machine::new())),
-        }
-    }
-
-    fn process_tasks(&mut self, mut tasks: Vec<Task<ProcessId, RunCmd>>) -> Result<(), Error> {
-        loop {
-            let mut new_tasks = Vec::new();
-
-            for t in tasks {
-                match t {
-                    Task::Start(pid, cmd) => {
-                        match self.run(pid, cmd.stdout, cmd.stderr, cmd.cmd) {
-                            Ok(RunResult::Process(state)) => self.machine.lock().unwrap().start(pid, state),
-                            Ok(RunResult::AlreadyDone(status)) => {
-                                new_tasks.extend(
-                                    self.machine.lock().unwrap().start_completed(pid, status));
-                            }
-                            Err(e) => {
-                                new_tasks.extend(
-                                    self.machine.lock().unwrap().start_completed(pid, ExitStatus::Failure));
-
-                                let mut back = self.backtraffic.lock().unwrap();
-                                let text = format!("{:?}", e);
-                                back.pipe(cmd.stderr, text.into_bytes())?;
-                                back.command_done(pid, 1)?;
-                            }
-                        }
-                    }
-                    Task::ConditionFailed(pid, _) => {
-                        self.backtraffic.lock().unwrap().command_done(pid, 1).unwrap();
-                    }
-                }
-            }
-
-            if new_tasks.len() == 0 {
-                break;
-            }
-
-            tasks = new_tasks;
-        }
-
-        Ok(())
-    }
-
-    fn finished(&mut self, id: ProcessId, exit_code: i64) -> Result<(), Error> {
-        let tasks = self.machine.lock().unwrap().completed(id, if exit_code == 0 {
-            ExitStatus::Success
-        } else {
-            ExitStatus::Failure
-        });
-        self.process_tasks(tasks)
-    }
-
-    fn enqueue(&mut self, id: ProcessId, cmd: RunCmd, block_for: HashMap<ProcessId, Condition>) -> Result<(), Error> {
-        let tasks = self.machine.lock().unwrap().enqueue(id, cmd, block_for);
-        self.process_tasks(tasks)
-    }
-
-    fn run(&mut self, id: ProcessId, stdout_pipe: WritePipe, stderr_pipe: WritePipe, c: Command) -> Result<RunResult, Error> {
-        eprintln!("{:?} running {:?}", id, c);
-        match c {
-            Command::Unknown(path, args) => {
-                let mut cmd = pr::Command::new(path);
-                cmd.args(&args);
-
-                let command_key = random_key();
-                cmd.env("NAK_COMMAND_KEY", &command_key);
-                self.running_commands.lock().unwrap().insert(command_key.clone(), CommandInfo {
-                    remote_id: 0,
-                    id,
-                });
-
-                let (mut error_reader, error_writer) = os_pipe::pipe()?;
-                cmd.stderr(error_writer.into_stdio());
-
-                let (mut output_reader, output_writer) = os_pipe::pipe()?;
-                
-                let mut do_forward = true;
-                if let Some(handle) = self.open_files.remove(&stdout_pipe) {
-                    cmd.stdout(handle);
-                    do_forward = false;
-                } else {
-                    cmd.stdout(output_writer.into_stdio());
-                }
-
-                let handle = Arc::new(Mutex::new(cmd.spawn()?));
-                let cancel_handle = handle.clone();
-
-                drop(cmd);
-
-                let (cancel_send, cancel_recv) = mpsc::channel();
-
-                let is_running = Arc::new(AtomicBool::new(true));
-
-                thread::spawn(move || {
-                    cancel_recv.recv().unwrap();
-                    eprintln!("{:?} received cancel", id);
-
-                    handle.lock().unwrap().kill().unwrap();
-
-                    eprintln!("{:?} finished cancel", id);
-                });
-
-                let stdout_thread = if do_forward {
-                    let backtraffic = self.backtraffic.clone();
-                    let is_running_clone = is_running.clone();
-                    let t = thread::spawn(move || {
-                        let mut buf = [0u8; 1024];
-
-                        loop {
-                            let len = output_reader.read(&mut buf).unwrap();
-                            eprintln!("{:?} read stdout {:?}", id, len);
-                            if len == 0 {
-                                // I wonder if this could become an infinite loop... :(
-                                if !is_running_clone.load(Ordering::SeqCst) {
-                                    break;
-                                // } else {
-                                //     assert!(false, "stdout continued!")
-                                }
-                            } else {
-                                backtraffic.lock().unwrap().pipe(stdout_pipe, buf[..len].to_vec()).unwrap();
-                            }
-                        }
-                    });
-                    Some(t)
-                } else {
-                    None
-                };
-
-                let is_running_clone = is_running.clone();
-                let backtraffic = self.backtraffic.clone();
-                let stderr_thread = thread::spawn(move || {
-                    let mut buf = [0u8; 1024];
-
-                    loop {
-                        let len = error_reader.read(&mut buf).unwrap();
-                        eprintln!("{:?} read stderr {:?}", id, len);
-                        if len == 0 {
-                            if !is_running_clone.load(Ordering::SeqCst) {
-                                // I wonder if this could become an infinite loop... :(
-                                break;
-                            // } else {
-                            //     assert!(false, "stderr continued!")
-                            }
-                        } else {
-                            backtraffic.lock().unwrap().pipe(stderr_pipe, buf[..len].to_vec()).unwrap();
-                        }
-                    }
-                });
-
-                let machine = self.machine.clone();
-                let is_running_clone = is_running.clone();
-                let backtraffic = self.backtraffic.clone();
-                let running_commands = self.running_commands.clone();
-                thread::spawn(move || {
-                    let exit_code = cancel_handle.lock().unwrap().wait().unwrap().code().unwrap_or(-1);
-                    eprintln!("{:?} exit {}", id, exit_code);
-                    machine.lock().unwrap().completed(id, if exit_code == 0 {
-                        ExitStatus::Success
-                    } else {
-                        ExitStatus::Failure
-                    });
-                    is_running_clone.store(false, Ordering::SeqCst);
-
-                    if let Some(t) = stdout_thread {
-                        t.join().unwrap();
-                    }
-
-                    stderr_thread.join().unwrap();
-
-                    running_commands.lock().unwrap().remove(&command_key);
-                    backtraffic.lock().unwrap().command_done(id, exit_code.into()).unwrap();
-                });
-
-                Ok(RunResult::Process(ProcessState::Running {
-                    cancel: cancel_send,
-                }))
-            }
-            Command::SetDirectory(dir) => {
-                let mut back = self.backtraffic.lock().unwrap();
-                match env::set_current_dir(dir) {
-                    Ok(_) => {
-                        back.command_done(id, 0)?;
-                        Ok(RunResult::AlreadyDone(ExitStatus::Success))
-                    }
-                    Err(e) => {
-                        back.pipe(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
-                        back.command_done(id, 1)?;
-                        Ok(RunResult::AlreadyDone(ExitStatus::Failure))
-                    }
-                }
-            }
-            Command::GetDirectory => {
-                let mut back = self.backtraffic.lock().unwrap();
-                match env::current_dir() {
-                    Ok(dir) => {
-                        back.pipe(stdout_pipe, format!("{}\n", dir.display()).into_bytes())?;
-                        back.command_done(id, 0)?;
-                        Ok(RunResult::AlreadyDone(ExitStatus::Success))
-                    }
-                    Err(e) => {
-                        back.pipe(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
-                        back.command_done(id, 1)?;
-                        Ok(RunResult::AlreadyDone(ExitStatus::Failure))
-                    }
-                }
-            }
-            Command::Edit(path) => {
-                let (sender, receiver) = mpsc::channel();
-
-                self.waiting_edits.lock().unwrap().insert(0, sender);
-
-
-                let mut contents = Vec::new();
-                match File::open(&path) {
-                    Ok(mut f) => {
-                        f.read_to_end(&mut contents)?;
-                    }
-                    Err(e) => {
-                        if e.kind() != io::ErrorKind::NotFound {
-                            return Err(e.into());
-                        }
-                    }
-                }
-
-                self.backtraffic.lock().unwrap().edit_request(id, 0, path.clone(), contents).unwrap();
-
-                let backtraffic = self.backtraffic.clone();
-                thread::spawn(move || {
-                    let resp = receiver.recv().unwrap();
-
-                    File::create(path).unwrap().write_all(&resp).unwrap();
-
-                    backtraffic.lock().unwrap().command_done(id, 0).unwrap();
-                });
-
-                Ok(RunResult::Process(ProcessState::AwaitingEdit))
-            }
+            exec,
         }
     }
 
@@ -442,28 +201,6 @@ impl AsyncBackendHandler {
         backend.handle.kill()?;
         Ok(())
     }
-
-    fn cancel(&mut self, id: ProcessId) -> Result<(), Error> {
-        match self.machine.lock().unwrap().status(id) {
-            Status::Running(state) => {
-                match state {
-                    ProcessState::Running { cancel } => {
-                        cancel.send(()).unwrap();
-                    }
-                    _ => panic!(),
-                }
-            }
-            Status::Exited(_) => {
-                // TODO: send back an "already exited" or something
-            }
-        }
-        Ok(())
-    }
-
-    fn open_file(&mut self, id: WritePipe, path: String) -> Result<(), Error> {
-        self.open_files.insert(id, File::create(path)?);
-        Ok(())
-    }
 }
 
 impl BackendHandler for AsyncBackendHandler {
@@ -474,12 +211,12 @@ impl BackendHandler for AsyncBackendHandler {
             stdout: process.stdout,
             stderr: process.stderr,
         };
-        self.enqueue(process.id, cmd, block_for)?;
+        self.exec.enqueue(process.id, cmd, block_for)?;
         Ok(())
     }
 
     fn cancel_command(&mut self, id: ProcessId) -> Result<(), Error> {
-        self.cancel(id)
+        self.exec.cancel(id)
     }
 
     fn begin_remote(&mut self, id: usize, command: Command) -> Result<(), Error> {
@@ -487,7 +224,7 @@ impl BackendHandler for AsyncBackendHandler {
     }
 
     fn open_file(&mut self, id: WritePipe, path: String) -> Result<(), Error> {
-        self.open_file(id, path)
+        self.exec.open_output_file(id, path)
     }
 
     fn end_remote(&mut self, id: usize) -> Result<(), Error> {

@@ -76,19 +76,20 @@ impl Exec {
                 }
             }
         } else {
-            for (remote, stream_id) in self.remote.handler.cwd_for_remote.drain() {
+            if self.remote.handler.waiting_for.len() == 0 {
+                for (remote, stream_id) in self.remote.handler.cwd_for_remote.drain() {
 
-                let result = self.remote.handler.gathering_output.remove(&stream_id).unwrap();
+                    let mut result = self.remote.handler.gathering_output.remove(&stream_id).unwrap();
 
-                for (id, rem) in self.remote.handler.remotes.iter_mut() {
-                    if *id == remote {
-                        rem.working_dir = String::from_utf8(result).unwrap();
-                        break;
+                    for (id, rem) in self.remote.handler.remotes.iter_mut() {
+                        if *id == remote {
+                            assert_eq!(result.pop(), Some(b'\n'));
+                            let text = String::from_utf8(result).unwrap();
+                            rem.working_dir = text;
+                            break;
+                        }
                     }
                 }
-            }
-
-            if self.remote.handler.waiting_for.len() == 0 {
                 let prompt = {
                     let top_remote = &self.remote.handler.remotes.last().unwrap().1;
                     format!("[{}:{}] {}$ ",

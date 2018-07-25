@@ -1,4 +1,5 @@
 
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::collections::{HashMap, HashSet};
 
@@ -9,7 +10,7 @@ struct Waiting<Id: Eq+Hash, Cmd> {
     conditions: HashMap<Id, Condition>,
 }
 
-pub struct Machine<Id: Eq+Hash+Copy+Clone, Cmd, State> {
+pub struct Machine<Id: Eq+Hash+Copy+Clone+Debug, Cmd, State> {
     finished: HashMap<Id, ExitStatus>,
     to_run: HashSet<Id>,
     running: HashMap<Id, State>,
@@ -28,7 +29,7 @@ pub enum Status<'a, State: 'a> {
     Exited(ExitStatus),
 }
 
-impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
+impl<Id: Eq+Hash+Copy+Clone+Debug, Cmd, State> Machine<Id, Cmd, State> {
     pub fn new() -> Machine<Id, Cmd, State> {
         Machine {
             finished: Default::default(),
@@ -50,6 +51,7 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
     }
 
     pub fn enqueue(&mut self, new_pid: Id, cmd: Cmd, block_for: HashMap<Id, Condition>) -> Vec<Task<Id, Cmd>> {
+        eprintln!("enqueue {:?}", new_pid);
         assert!(
             !self.finished.contains_key(&new_pid) &&
             !self.to_run.contains(&new_pid) &&
@@ -92,12 +94,14 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
     }
 
     pub fn start(&mut self, pid: Id, state: State) {
+        eprintln!("start {:?}", pid);
         assert!(self.to_run.remove(&pid));
 
         self.running.insert(pid, state);
     }
 
     pub fn start_completed(&mut self, pid: Id, status: ExitStatus) -> Vec<Task<Id, Cmd>> {
+        eprintln!("start_completed {:?}", pid);
         assert!(self.to_run.remove(&pid));
 
         self.finished.insert(pid, status);
@@ -105,10 +109,10 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
     }
 
     pub fn completed(&mut self, pid: Id, status: ExitStatus) -> Vec<Task<Id, Cmd>> {
-
-        assert!(self.running.contains_key(&pid));
-
-        self.running.remove(&pid);
+        eprintln!("completed {:?}", pid);
+        let state = self.running.remove(&pid);
+        assert!(state.is_some());
+        drop(state);
         self.finished.insert(pid, status);
         self.resolve_tasks(pid, status)
     }
@@ -130,6 +134,7 @@ impl<Id: Eq+Hash+Copy+Clone, Cmd, State> Machine<Id, Cmd, State> {
                         assert_eq!(c2, cond);
 
                         if waiting.conditions.len() == 0 {
+                            self.to_run.insert(waiting_pid);
                             tasks.push(Task::Start(waiting_pid, waiting.cmd));
                         } else {
                             self.waiting_on.insert(waiting_pid, waiting);

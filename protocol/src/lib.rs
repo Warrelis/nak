@@ -58,6 +58,16 @@ pub enum ExitStatus {
     Failure,
 }
 
+impl ExitStatus {
+    pub fn from_exit_code(code: i64) -> ExitStatus {
+        if code == 0 {
+            ExitStatus::Success
+        } else {
+            ExitStatus::Failure
+        }
+    }
+}
+
 pub type Condition = Option<ExitStatus>;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -65,6 +75,21 @@ pub struct ReadPipe(usize);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct WritePipe(usize);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct GenericPipe(usize);
+
+impl ReadPipe {
+    pub fn to_generic(&self) -> GenericPipe {
+        GenericPipe(self.0)
+    }
+}
+
+impl WritePipe {
+    pub fn to_generic(&self) -> GenericPipe {
+        GenericPipe(self.0)
+    }
+}
 
 pub struct ReadPipes {
     pub stdin: WritePipe,
