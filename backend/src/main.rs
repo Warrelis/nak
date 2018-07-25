@@ -284,13 +284,14 @@ impl AsyncBackendHandler {
                     }
                 });
 
+                let machine = self.machine.clone();
                 let is_running_clone = is_running.clone();
                 let backtraffic = self.backtraffic.clone();
                 let running_commands = self.running_commands.clone();
                 thread::spawn(move || {
                     let exit_code = cancel_handle.lock().unwrap().wait().unwrap().code().unwrap_or(-1);
                     eprintln!("{:?} exit {}", id, exit_code);
-                    self.machine.lock().unwrap().completed(id, if exit_code == 0 {
+                    machine.lock().unwrap().completed(id, if exit_code == 0 {
                         ExitStatus::Success
                     } else {
                         ExitStatus::Failure
@@ -442,7 +443,7 @@ impl AsyncBackendHandler {
     }
 
     fn cancel(&mut self, id: ProcessId) -> Result<(), Error> {
-        match self.machine.status(id) {
+        match self.machine.lock().unwrap().status(id) {
             Status::Running(state) => {
                 match state {
                     ProcessState::Running { cancel } => {
