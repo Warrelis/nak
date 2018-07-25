@@ -19,6 +19,7 @@ extern crate hostname;
 #[cfg(unix)] extern crate nix;
 
 mod machine;
+mod exec;
 
 #[cfg(unix)] mod run;
 
