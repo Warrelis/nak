@@ -5,7 +5,7 @@ use std::thread;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::process as pr;
 use std::io;
-use std::io::{Read};
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::env;
 
@@ -13,7 +13,7 @@ use failure::Error;
 use os_pipe;
 use os_pipe::{IntoStdio};
 
-use protocol::{ProcessId, Command, ReadPipe, WritePipe, ExitStatus, Condition};
+use protocol::{ProcessId, Command, ReadPipe, WritePipe, ExitStatus, Condition, Ids};
 
 use machine::{Machine, Task, Status};
 
@@ -42,14 +42,17 @@ enum ExecEvent {
     OpenOutputFile(WritePipe, String),
     CancelExec(ProcessId),
     PipeOutput(WritePipe, Vec<u8>),
+    EditComplete(usize, Vec<u8>),
 }
 
 struct ExecInternal {
+    edit_ids: Ids,
     handler: Box<dyn Handler>,
     sender: mpsc::Sender<ExecEvent>,
     receiver: mpsc::Receiver<ExecEvent>,
     machine: Machine<ProcessId, RunCmd, ProcessState>,
     open_output_files: HashMap<WritePipe, File>,
+    waiting_edits: HashMap<usize, (ProcessId, String)>,
 }
 
 impl ExecInternal {
@@ -75,6 +78,9 @@ impl ExecInternal {
                 }
                 ExecEvent::PipeOutput(pipe, data) => {
                     self.pipe_output(pipe, data).unwrap();
+                }
+                ExecEvent::EditComplete(edit_id, data) => {
+                    self.finish_edit(edit_id, data).unwrap();
                 }
             }
         }
@@ -259,11 +265,6 @@ impl ExecInternal {
                 }
             }
             Command::Edit(path) => {
-                // let (sender, receiver) = mpsc::channel();
-
-                // self.waiting_edits.lock().unwrap().insert(0, sender);
-
-
                 let mut contents = Vec::new();
                 match File::open(&path) {
                     Ok(mut f) => {
@@ -276,16 +277,7 @@ impl ExecInternal {
                     }
                 }
 
-                // self.backtraffic.lock().unwrap().edit_request(id, 0, path.clone(), contents).unwrap();
-
-                // let backtraffic = self.backtraffic.clone();
-                // thread::spawn(move || {
-                //     let resp = receiver.recv().unwrap();
-
-                //     File::create(path).unwrap().write_all(&resp).unwrap();
-
-                //     backtraffic.lock().unwrap().command_done(id, 0).unwrap();
-                // });
+                self.begin_edit_request(pid, path.clone(), contents)?;
 
                 Ok(RunResult::Process(ProcessState::AwaitingEdit))
             }
@@ -317,11 +309,26 @@ impl ExecInternal {
         }
         Ok(())
     }
+
+    fn begin_edit_request(&mut self, pid: ProcessId, path: String, data: Vec<u8>) -> Result<(), Error> {
+        let edit_id = self.edit_ids.next();
+        self.waiting_edits.insert(edit_id, (pid, path.clone()));
+        self.handler.edit_request(pid, edit_id, path, data)?;
+        Ok(())
+    }
+
+    fn finish_edit(&mut self, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
+        let (pid, path) = self.waiting_edits.remove(&edit_id).unwrap();
+        File::create(path)?.write_all(&data).unwrap();
+        self.completed(pid, 0)?;
+        Ok(())
+    }
 }
 
 pub trait Handler: Send + 'static {
     fn pipe_output(&mut self, pipe: WritePipe, data: Vec<u8>) -> Result<(), Error>;
     fn command_result(&mut self, pid: ProcessId, exit_code: i64) -> Result<(), Error>;
+    fn edit_request(&mut self, pid: ProcessId, edit_id: usize, name: String, data: Vec<u8>) -> Result<(), Error>;
 }
 
 pub struct Exec {
@@ -334,11 +341,13 @@ impl Exec {
         let (sender, receiver) = mpsc::channel();
 
         let mut intern = ExecInternal {
+            edit_ids: Ids::new(),
             sender: sender.clone(),
             receiver,
             machine: Machine::new(),
             open_output_files: HashMap::new(),
             handler,
+            waiting_edits: HashMap::new(),
         };
 
         let t = thread::spawn(move || intern.run_handler());
@@ -361,6 +370,11 @@ impl Exec {
 
     pub fn open_output_file(&self, pipe: WritePipe, path: String) -> Result<(), Error> {
         self.sender.send(ExecEvent::OpenOutputFile(pipe, path)).unwrap();
+        Ok(())
+    }
+
+    pub fn finish_edit(&self, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
+        self.sender.send(ExecEvent::EditComplete(edit_id, data)).unwrap();
         Ok(())
     }
 }

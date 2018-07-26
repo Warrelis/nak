@@ -28,7 +28,7 @@ mod exec;
 use std::collections::HashMap;
 use std::io::{Write, Read, BufRead, BufReader, Seek, SeekFrom};
 use std::{io, env, fs, thread};
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::sync::Arc;
@@ -109,6 +109,10 @@ impl exec::Handler for ExecHandler {
 
     fn command_result(&mut self, pid: ProcessId, exit_code: i64) -> Result<(), Error> {
         self.backtraffic.lock().unwrap().command_done(pid, exit_code)
+    }
+
+    fn edit_request(&mut self, pid: ProcessId, edit_id: usize, path: String, data: Vec<u8>) -> Result<(), Error> {
+        self.backtraffic.lock().unwrap().edit_request(pid, edit_id, path, data)
     }
 }
 
@@ -240,8 +244,8 @@ impl BackendHandler for AsyncBackendHandler {
         Ok(())
     }
 
-    fn finish_edit(&mut self, id: usize, data: Vec<u8>) -> Result<(), Error> {
-        self.waiting_edits.lock().unwrap().remove(&id).unwrap().send(data)?;
+    fn finish_edit(&mut self, edit_id: usize, data: Vec<u8>) -> Result<(), Error> {
+        self.exec.finish_edit(edit_id, data)?;
         Ok(())
     }
 

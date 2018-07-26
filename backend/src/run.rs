@@ -103,7 +103,7 @@ fn start_py() -> Result<CommandOutput, Error> {
 pub fn run_experiment() -> Result<(), Error> {
     let mut cmd = start_py()?;
 
-    let mut reactor = tokio::reactor::Reactor::new();
+    // let mut reactor = tokio::reactor::Reactor::new();
 
     let mut buf = [0u8; 1024];
 
