@@ -60,7 +60,6 @@ fn convert_ast(remotes: &Remotes, prefs: &Prefs, ast: &Ast, plan: &mut PlanBuild
         Ast::Empty => stdout,
         Ast::Cmd(cmd) => {
             let stdin = plan.pipe();
-            eprintln!("piping {:?}, {}", cmd, stdin);
             plan.add_command(*remotes.stack.last().unwrap(), convert_single(remotes, prefs, cmd)?, stdin, stdout, stderr);
             stdin
         }
@@ -74,7 +73,6 @@ fn convert_ast(remotes: &Remotes, prefs: &Prefs, ast: &Ast, plan: &mut PlanBuild
                         plan.add_file_output(*remotes.stack.last().unwrap(), path.expand_string())
                     }
                     Target::Command(cmd) => {
-                        eprintln!("planning {:?}", cmd);
                         convert_ast(remotes, prefs, &cmd, plan, stdout, stderr)?
                     }
                 };
