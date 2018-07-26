@@ -31,7 +31,7 @@ fn check_single_arg<'a>(items: impl Iterator<Item=String>) -> Result<String, Err
 
 fn convert_single(_remotes: &Remotes, prefs: &Prefs, cmd: &Cmd) -> Result<Command, Error> {
 
-    let items = prefs.expand(cmd.0.iter().map(|w| w.expand_string()).collect());
+    let items = prefs.expand(cmd.words.iter().map(|w| w.expand_string()).collect());
 
     let mut it = items.into_iter();
     let head = it.next().unwrap();
@@ -60,6 +60,7 @@ fn convert_ast(remotes: &Remotes, prefs: &Prefs, ast: &Ast, plan: &mut PlanBuild
         Ast::Empty => stdout,
         Ast::Cmd(cmd) => {
             let stdin = plan.pipe();
+            eprintln!("piping {:?}, {}", cmd, stdin);
             plan.add_command(*remotes.stack.last().unwrap(), convert_single(remotes, prefs, cmd)?, stdin, stdout, stderr);
             stdin
         }
@@ -73,13 +74,20 @@ fn convert_ast(remotes: &Remotes, prefs: &Prefs, ast: &Ast, plan: &mut PlanBuild
                         plan.add_file_output(*remotes.stack.last().unwrap(), path.expand_string())
                     }
                     Target::Command(cmd) => {
+                        eprintln!("planning {:?}", cmd);
                         convert_ast(remotes, prefs, &cmd, plan, stdout, stderr)?
                     }
                 };
 
                 match clause.0 {
-                    Stream::Stdout => stdout = stdin,
-                    Stream::Stderr => stderr = stdin,
+                    Stream::Stdout => {
+                        stdout = stdin;
+                        stderr = plan.pipe();
+                    }
+                    Stream::Stderr => {
+                        stderr = stdin;
+                        stdout = plan.pipe();
+                    }
                 }
             }
 
@@ -97,7 +105,11 @@ fn parse_command_simple(remotes: &Remotes, prefs: &Prefs, input: &str) -> Result
     let stderr = p.pipe();
     let stdin = convert_ast(remotes, prefs, &cmd, &mut p, stdout, stderr)?;
 
-    Ok(p.build(Some(stdin), Some(stdout), Some(stderr)))
+    p.set_stdin(Some(stdin));
+    p.set_stdout(Some(stdout));
+    p.set_stderr(Some(stderr));
+
+    Ok(p.build())
 }
 
 struct SimpleCompleter;
@@ -171,7 +183,7 @@ impl SimpleReader {
                             let mut p = PlanBuilder::new();
                             p.exit(RemoteRef(0));
 
-                            Ok(p.build(None, None, None))
+                            Ok(p.build())
                         }
                         _ => Err(e.into()),
                     }

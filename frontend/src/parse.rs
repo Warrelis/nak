@@ -32,7 +32,10 @@ pub enum SequenceType {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Cmd(pub Vec<Word>);
+pub struct Cmd {
+    pub remote: Option<String>,
+    pub words: Vec<Word>
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SequenceClause(pub SequenceType, pub Ast);
@@ -104,7 +107,10 @@ fn parse_cmd(input: &mut Consume) -> Cmd {
         }
     }
 
-    Cmd(children)
+    Cmd {
+        remote: None,
+        words: children,
+    }
 }
 
 fn parse_pipe(input: &mut Consume) -> Ast {
