@@ -130,7 +130,7 @@ impl Exec {
                         Step::Remote(_remote_id, RemoteStep::OpenOutputFile(path)) => {
                             let remote = self.remote.cur_remote();
 
-                            let handle = self.remote.open_file(remote, path)?;
+                            let handle = self.remote.open_output_file(remote, path)?;
                             pipe_pairs.push((None, Some(handle)));
                             // let handle = self.remote.
                         }

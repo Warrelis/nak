@@ -13,7 +13,7 @@ use failure::Error;
 use os_pipe;
 use os_pipe::{IntoStdio};
 
-use protocol::{ProcessId, Command, ReadPipe, WritePipe, ExitStatus, Condition, Ids};
+use protocol::{ProcessId, Command, ReadPipe, WritePipe, ExitStatus, Condition, Ids, GenericPipe};
 
 use machine::{Machine, Task, Status};
 
@@ -36,10 +36,21 @@ enum RunResult {
     AlreadyDone(i64),
 }
 
+enum OutputPipe {
+    File(File),
+    Pipe(os_pipe::PipeWriter),
+}
+
+enum InputPipe {
+    File(File),
+    Pipe(os_pipe::PipeReader),
+}
+
 enum ExecEvent {
     Enqueue(ProcessId, RunCmd, HashMap<ProcessId, Condition>),
     Completed(ProcessId, i64),
     OpenOutputFile(WritePipe, String),
+    OpenInputFile(ReadPipe, String),
     CancelExec(ProcessId),
     PipeOutput(WritePipe, Vec<u8>),
     EditComplete(usize, Vec<u8>),
@@ -51,7 +62,8 @@ struct ExecInternal {
     sender: mpsc::Sender<ExecEvent>,
     receiver: mpsc::Receiver<ExecEvent>,
     machine: Machine<ProcessId, RunCmd, ProcessState>,
-    open_output_files: HashMap<WritePipe, File>,
+    open_output_handles: HashMap<GenericPipe, OutputPipe>,
+    open_input_handles: HashMap<GenericPipe, InputPipe>,
     waiting_edits: HashMap<usize, (ProcessId, String)>,
 }
 
@@ -72,6 +84,9 @@ impl ExecInternal {
                 }
                 ExecEvent::OpenOutputFile(pipe, path) => {
                     self.open_output_file(pipe, path).unwrap();
+                }
+                ExecEvent::OpenInputFile(pipe, path) => {
+                    self.open_input_file(pipe, path).unwrap();
                 }
                 ExecEvent::CancelExec(pid) => {
                     self.cancel(pid).unwrap();
@@ -94,7 +109,8 @@ impl ExecInternal {
             for t in tasks {
                 match t {
                     Task::Start(pid, cmd) => {
-                        match self.run(pid, cmd.stdout, cmd.stderr, cmd.cmd) {
+                        let stderr = cmd.stderr;
+                        match self.run(pid, cmd) {
                             Ok(RunResult::Process(state)) => self.machine.start(pid, state),
                             Ok(RunResult::AlreadyDone(exit_code)) => {
                                 new_tasks.extend(
@@ -104,7 +120,8 @@ impl ExecInternal {
                             Err(e) => {
                                 new_tasks.extend(
                                     self.machine.start_completed(pid, ExitStatus::Failure));
-                                self.pipe_output(cmd.stderr, format!("{:?}", e).into_bytes())?;
+                                // TODO: perhaps this should go back on a custom error stream (rather than stderr?)
+                                self.pipe_output(stderr, format!("{:?}", e).into_bytes())?;
                                 self.handler.command_result(pid, 1)?;
                             }
                         }
@@ -136,9 +153,9 @@ impl ExecInternal {
         self.process_tasks(tasks)
     }
 
-    fn run(&mut self, pid: ProcessId, stdout_pipe: WritePipe, stderr_pipe: WritePipe, c: Command) -> Result<RunResult, Error> {
-        eprintln!("{:?} running {:?}", pid, c);
-        match c {
+    fn run(&mut self, pid: ProcessId, c: RunCmd) -> Result<RunResult, Error> {
+        eprintln!("{:?} running {:?}", pid, c.cmd);
+        match c.cmd {
             Command::Unknown(path, args) => {
                 let mut cmd = pr::Command::new(path);
                 cmd.args(&args);
@@ -150,17 +167,37 @@ impl ExecInternal {
                 //     id,
                 // });
 
-                let (mut error_reader, error_writer) = os_pipe::pipe()?;
-                cmd.stderr(error_writer.into_stdio());
-
-                let (mut output_reader, output_writer) = os_pipe::pipe()?;
-                
-                let mut do_forward = true;
-                if let Some(handle) = self.open_output_files.remove(&stdout_pipe) {
-                    cmd.stdout(handle);
-                    do_forward = false;
+                if let Some(handle) = self.open_input_handles.remove(&c.stdin.to_generic()) {
+                    match handle {
+                        InputPipe::File(f) => cmd.stdin(f),
+                        InputPipe::Pipe(f) => cmd.stdin(f.into_stdio()),
+                    };
                 } else {
+                    let (input_reader, input_writer) = os_pipe::pipe()?;
+                    cmd.stdin(input_reader.into_stdio());
+                    self.open_output_handles.insert(c.stdin.to_generic(), OutputPipe::Pipe(input_writer));
+                }
+
+                if let Some(handle) = self.open_output_handles.remove(&c.stdout.to_generic()) {
+                    match handle {
+                        OutputPipe::File(f) => cmd.stdout(f),
+                        OutputPipe::Pipe(p) => cmd.stdout(p.into_stdio()),
+                    };
+                } else {
+                    let (output_reader, output_writer) = os_pipe::pipe()?;
                     cmd.stdout(output_writer.into_stdio());
+                    self.open_input_handles.insert(c.stdout.to_generic(), InputPipe::Pipe(output_reader));
+                }
+
+                if let Some(handle) = self.open_output_handles.remove(&c.stderr.to_generic()) {
+                    match handle {
+                        OutputPipe::File(f) => cmd.stdout(f),
+                        OutputPipe::Pipe(p) => cmd.stdout(p.into_stdio()),
+                    };
+                } else {
+                    let (error_reader, error_writer) = os_pipe::pipe()?;
+                    cmd.stdout(error_writer.into_stdio());
+                    self.open_input_handles.insert(c.stderr.to_generic(), InputPipe::Pipe(error_reader));
                 }
 
                 let handle = Arc::new(Mutex::new(cmd.spawn()?));
@@ -170,52 +207,8 @@ impl ExecInternal {
 
                 let is_running = Arc::new(AtomicBool::new(true));
 
-                let stdout_thread = if do_forward {
-                    let sender = self.sender.clone();
-                    let is_running_clone = is_running.clone();
-                    let t = thread::spawn(move || {
-                        let mut buf = [0u8; 1024];
-
-                        loop {
-                            let len = output_reader.read(&mut buf).unwrap();
-                            eprintln!("{:?} read stdout {:?}", pid, len);
-                            if len == 0 {
-                                // I wonder if this could become an infinite loop... :(
-                                if !is_running_clone.load(Ordering::SeqCst) {
-                                    break;
-                                // } else {
-                                //     assert!(false, "stdout continued!")
-                                }
-                            } else {
-                                sender.send(ExecEvent::PipeOutput(stdout_pipe, buf[..len].to_vec())).unwrap();
-                            }
-                        }
-                    });
-                    Some(t)
-                } else {
-                    None
-                };
-
                 let is_running_clone = is_running.clone();
                 let sender = self.sender.clone();
-                let stderr_thread = thread::spawn(move || {
-                    let mut buf = [0u8; 1024];
-
-                    loop {
-                        let len = error_reader.read(&mut buf).unwrap();
-                        eprintln!("{:?} read stderr {:?}", pid, len);
-                        if len == 0 {
-                            if !is_running_clone.load(Ordering::SeqCst) {
-                                // I wonder if this could become an infinite loop... :(
-                                break;
-                            // } else {
-                            //     assert!(false, "stderr continued!")
-                            }
-                        } else {
-                            sender.send(ExecEvent::PipeOutput(stderr_pipe, buf[..len].to_vec())).unwrap();
-                        }
-                    }
-                });
 
                 let sender = self.sender.clone();
                 let is_running_clone = is_running.clone();
@@ -227,12 +220,6 @@ impl ExecInternal {
                     sender.send(ExecEvent::Completed(pid, exit_code.into())).unwrap();
                     is_running_clone.store(false, Ordering::SeqCst);
 
-                    if let Some(t) = stdout_thread {
-                        t.join().unwrap();
-                    }
-
-                    stderr_thread.join().unwrap();
-
                     // running_commands.lock().unwrap().remove(&command_key);
                 });
 
@@ -243,11 +230,11 @@ impl ExecInternal {
             Command::SetDirectory(dir) => {
                 match env::set_current_dir(dir) {
                     Ok(o) => {
-                        self.pipe_output(stderr_pipe, format!("Success: {:?}", o).into_bytes())?;
+                        self.pipe_output(c.stderr, format!("Success: {:?}", o).into_bytes())?;
                         Ok(RunResult::AlreadyDone(0))
                     }
                     Err(e) => {
-                        self.pipe_output(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
+                        self.pipe_output(c.stderr, format!("Error: {:?}", e).into_bytes())?;
                         Ok(RunResult::AlreadyDone(1))
                     }
                 }
@@ -255,11 +242,11 @@ impl ExecInternal {
             Command::GetDirectory => {
                 match env::current_dir() {
                     Ok(dir) => {
-                        self.pipe_output(stdout_pipe, format!("{}\n", dir.display()).into_bytes())?;
+                        self.pipe_output(c.stdout, format!("{}\n", dir.display()).into_bytes())?;
                         Ok(RunResult::AlreadyDone(0))
                     }
                     Err(e) => {
-                        self.pipe_output(stderr_pipe, format!("Error: {:?}", e).into_bytes())?;
+                        self.pipe_output(c.stderr, format!("Error: {:?}", e).into_bytes())?;
                         Ok(RunResult::AlreadyDone(1))
                     }
                 }
@@ -285,7 +272,12 @@ impl ExecInternal {
     }
 
     fn open_output_file(&mut self, pipe: WritePipe, path: String) -> Result<(), Error> {
-        self.open_output_files.insert(pipe, File::create(path)?);
+        self.open_output_handles.insert(pipe.to_generic(), OutputPipe::File(File::create(path)?));
+        Ok(())
+    }
+
+    fn open_input_file(&mut self, pipe: ReadPipe, path: String) -> Result<(), Error> {
+        self.open_input_handles.insert(pipe.to_generic(), InputPipe::File(File::open(path)?));
         Ok(())
     }
 
@@ -345,7 +337,8 @@ impl Exec {
             sender: sender.clone(),
             receiver,
             machine: Machine::new(),
-            open_output_files: HashMap::new(),
+            open_output_handles: HashMap::new(),
+            open_input_handles: HashMap::new(),
             handler,
             waiting_edits: HashMap::new(),
         };
@@ -370,6 +363,11 @@ impl Exec {
 
     pub fn open_output_file(&self, pipe: WritePipe, path: String) -> Result<(), Error> {
         self.sender.send(ExecEvent::OpenOutputFile(pipe, path)).unwrap();
+        Ok(())
+    }
+
+    pub fn open_input_file(&self, pipe: ReadPipe, path: String) -> Result<(), Error> {
+        self.sender.send(ExecEvent::OpenInputFile(pipe, path)).unwrap();
         Ok(())
     }
 

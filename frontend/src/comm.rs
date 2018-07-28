@@ -192,7 +192,7 @@ impl EndpointExt for BackendEndpoint {
         let (stderr_read, stderr_write) = self.pipe();
         let (stdin_read, stdin_write) = self.pipe();
         if let Some(redirect) = redirect {
-            let stdout_write = self.open_file(cur_remote, redirect)?;
+            let stdout_write = self.open_output_file(cur_remote, redirect)?;
             let (stdout_read, _) = self.pipe();
             let id = self.command(cur_remote, c, HashMap::new(), WritePipes {
                 stdin: stdin_read, stdout: stdout_write, stderr: stderr_write

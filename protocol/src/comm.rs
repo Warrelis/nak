@@ -155,20 +155,36 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
         Ok(id)
     }
 
-    pub fn open_file(&mut self, remote: RemoteId, path: String) -> Result<WritePipe, Error> {
+    pub fn open_output_file(&mut self, remote: RemoteId, path: String) -> Result<WritePipe, Error> {
         assert!(self.remotes.contains_key(&remote));
 
         let id = self.ids.next();
 
         self.pipes.insert(id);
 
-        self.trans.send(&ser_to_endpoint(remote, RemoteRequest::OpenFile {
+        self.trans.send(&ser_to_endpoint(remote, RemoteRequest::OpenOutputFile {
             id,
             path,
         }))?;
 
         Ok(WritePipe(id))
     }
+
+    pub fn open_input_file(&mut self, remote: RemoteId, path: String) -> Result<ReadPipe, Error> {
+        assert!(self.remotes.contains_key(&remote));
+
+        let id = self.ids.next();
+
+        self.pipes.insert(id);
+
+        self.trans.send(&ser_to_endpoint(remote, RemoteRequest::OpenInputFile {
+            id,
+            path,
+        }))?;
+
+        Ok(ReadPipe(id))
+    }
+
 
     pub fn close_remote(&mut self, remote: RemoteId) -> Result<(), Error> {
         let state = self.remotes.remove(&remote).expect("remote not connected");
@@ -212,7 +228,8 @@ pub trait BackendHandler {
     fn begin_command(&mut self, block_for: HashMap<ProcessId, Condition>, process: WriteProcess, command: Command) -> Result<(), Error>;
     fn cancel_command(&mut self, id: ProcessId) -> Result<(), Error>;
     fn begin_remote(&mut self, id: usize, command: Command) -> Result<(), Error>;
-    fn open_file(&mut self, id: WritePipe, path: String) -> Result<(), Error>;
+    fn open_output_file(&mut self, id: WritePipe, path: String) -> Result<(), Error>;
+    fn open_input_file(&mut self, id: ReadPipe, path: String) -> Result<(), Error>;
     fn end_remote(&mut self, id: usize) -> Result<(), Error>;
     fn list_directory(&mut self, id: usize, path: String) -> Result<(), Error>;
     fn finish_edit(&mut self, id: usize, data: Vec<u8>) -> Result<(), Error>;
@@ -243,8 +260,11 @@ impl Request {
             RemoteRequest::BeginRemote { id, command, } => {
                 handler.begin_remote(id, command)
             }
-            RemoteRequest::OpenFile { id, path, } => {
-                handler.open_file(WritePipe(id), path)
+            RemoteRequest::OpenOutputFile { id, path, } => {
+                handler.open_output_file(WritePipe(id), path)
+            }
+            RemoteRequest::OpenInputFile { id, path, } => {
+                handler.open_input_file(ReadPipe(id), path)
             }
             RemoteRequest::EndRemote { id, } => {
                 handler.end_remote(id)

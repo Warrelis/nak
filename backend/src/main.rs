@@ -52,6 +52,7 @@ use protocol::{
     Command,
     WriteProcess,
     WritePipe,
+    ReadPipe,
     BackendHandler,
     Transport,
     Condition,
@@ -227,8 +228,12 @@ impl BackendHandler for AsyncBackendHandler {
         self.begin_remote(id, command)
     }
 
-    fn open_file(&mut self, id: WritePipe, path: String) -> Result<(), Error> {
+    fn open_output_file(&mut self, id: WritePipe, path: String) -> Result<(), Error> {
         self.exec.open_output_file(id, path)
+    }
+
+    fn open_input_file(&mut self, id: ReadPipe, path: String) -> Result<(), Error> {
+        self.exec.open_input_file(id, path)
     }
 
     fn end_remote(&mut self, id: usize) -> Result<(), Error> {

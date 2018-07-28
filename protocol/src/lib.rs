@@ -147,7 +147,11 @@ enum RemoteRequest {
         id: usize,
         command: Command,
     },
-    OpenFile {
+    OpenOutputFile {
+        id: usize,
+        path: String,
+    },
+    OpenInputFile {
         id: usize,
         path: String,
     },
