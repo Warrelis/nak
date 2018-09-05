@@ -151,6 +151,7 @@ impl<Id: Eq+Hash+Copy+Clone+Debug, Cmd, State> Machine<Id, Cmd, State> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::ExitStatus;
 
     fn wait(items: &[(usize, Option<ExitStatus>)]) -> HashMap<usize, Option<ExitStatus>> {
         let mut res = HashMap::new();
@@ -168,7 +169,7 @@ mod tests {
 
         assert_eq!(m.enqueue(0, "a", wait(&[])), vec![Task::Start(0, "a")]);
 
-        use ExitStatus::*;
+        use self::ExitStatus::*;
 
         assert_eq!(m.enqueue(1, "b", wait(&[(0, None)])), vec![]);
         m.start(0, "waffle");

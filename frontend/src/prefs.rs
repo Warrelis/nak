@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
-use std::env;
 use std::io;
 
 use failure::Error;
 use serde_json;
+use dirs;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Item {
@@ -28,7 +28,7 @@ pub struct Prefs {
 impl Prefs {
     pub fn load() -> Result<Prefs, Error> {
         let mut contents = String::new();
-        match File::open(env::home_dir().unwrap().join(".config").join("nak").join("prefs.nak")) {
+        match File::open(dirs::home_dir().unwrap().join(".config").join("nak").join("prefs.nak")) {
             Ok(mut f) => {
                 f.read_to_string(&mut contents)?;
 
@@ -105,20 +105,5 @@ impl Prefs {
         }
 
         cmd
-    }
-}
-
-
-#[cfg(test)]
-impl Prefs {
-    pub fn git_alias_prefs() -> Prefs {
-        Prefs {
-            aliases: vec![
-                Rule {
-                    find: vec![Item::Literal("g".into()), Item::Literal("c".into()), Item::Expando(0)],
-                    replace: vec![Item::Literal("git".into()), Item::Literal("commit".into()), Item::Expando(0)],
-                }
-            ],
-        }
     }
 }

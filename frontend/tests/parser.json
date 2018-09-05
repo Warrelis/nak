@@ -10,93 +10,117 @@
   {
     "input": "a",
     "output": {
-      "Cmd": [
-        {
-          "Normal": "a"
-        }
-      ]
+      "Cmd": {
+        "remote": null,
+        "words": [
+          {
+            "Normal": "a"
+          }
+        ]
+      }
     }
   },
   {
     "input": " a",
     "output": {
-      "Cmd": [
-        {
-          "Normal": "a"
-        }
-      ]
+      "Cmd": {
+        "remote": null,
+        "words": [
+          {
+            "Normal": "a"
+          }
+        ]
+      }
     }
   },
   {
     "input": "a ",
     "output": {
-      "Cmd": [
-        {
-          "Normal": "a"
-        }
-      ]
+      "Cmd": {
+        "remote": null,
+        "words": [
+          {
+            "Normal": "a"
+          }
+        ]
+      }
     }
   },
   {
     "input": "a b",
     "output": {
-      "Cmd": [
-        {
-          "Normal": "a"
-        },
-        {
-          "Normal": "b"
-        }
-      ]
+      "Cmd": {
+        "remote": null,
+        "words": [
+          {
+            "Normal": "a"
+          },
+          {
+            "Normal": "b"
+          }
+        ]
+      }
     }
   },
   {
     "input": " a  b    ",
     "output": {
-      "Cmd": [
-        {
-          "Normal": "a"
-        },
-        {
-          "Normal": "b"
-        }
-      ]
+      "Cmd": {
+        "remote": null,
+        "words": [
+          {
+            "Normal": "a"
+          },
+          {
+            "Normal": "b"
+          }
+        ]
+      }
     }
   },
   {
     "input": "a \"b c\"   \"c    d\"",
     "output": {
-      "Cmd": [
-        {
-          "Normal": "a"
-        },
-        {
-          "Normal": "b c"
-        },
-        {
-          "Normal": "c    d"
-        }
-      ]
+      "Cmd": {
+        "remote": null,
+        "words": [
+          {
+            "Normal": "a"
+          },
+          {
+            "Normal": "b c"
+          },
+          {
+            "Normal": "c    d"
+          }
+        ]
+      }
     }
   },
   {
     "input": "a123",
     "output": {
-      "Cmd": [
-        {
-          "Normal": "a123"
-        }
-      ]
+      "Cmd": {
+        "remote": null,
+        "words": [
+          {
+            "Normal": "a123"
+          }
+        ]
+      }
     }
   },
   {
     "input": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678.-_/{}$@=,~",
     "output": {
-      "Cmd": [
-        {
-          "Normal": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678.-_/{}$@=,~"
-        }
-      ]
+      "Cmd": {
+        "remote": null,
+        "words": [
+          {
+            "Normal": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678.-_/{}$@=,~"
+          }
+        ]
+      }
     }
   },
   {
@@ -104,11 +128,14 @@
     "output": {
       "Redirect": [
         {
-          "Cmd": [
-            {
-              "Normal": "a"
-            }
-          ]
+          "Cmd": {
+            "remote": null,
+            "words": [
+              {
+                "Normal": "a"
+              }
+            ]
+          }
         },
         [
           [
@@ -128,31 +155,40 @@
     "output": {
       "Sequence": [
         {
-          "Cmd": [
-            {
-              "Normal": "a"
-            }
-          ]
+          "Cmd": {
+            "remote": null,
+            "words": [
+              {
+                "Normal": "a"
+              }
+            ]
+          }
         },
         [
           [
             "Wait",
             {
-              "Cmd": [
-                {
-                  "Normal": "b"
-                }
-              ]
+              "Cmd": {
+                "remote": null,
+                "words": [
+                  {
+                    "Normal": "b"
+                  }
+                ]
+              }
             }
           ],
           [
             "Wait",
             {
-              "Cmd": [
-                {
-                  "Normal": "c"
-                }
-              ]
+              "Cmd": {
+                "remote": null,
+                "words": [
+                  {
+                    "Normal": "c"
+                  }
+                ]
+              }
             }
           ]
         ]
@@ -164,22 +200,28 @@
     "output": {
       "Redirect": [
         {
-          "Cmd": [
-            {
-              "Normal": "a"
-            }
-          ]
+          "Cmd": {
+            "remote": null,
+            "words": [
+              {
+                "Normal": "a"
+              }
+            ]
+          }
         },
         [
           [
             "Stdout",
             {
               "Command": {
-                "Cmd": [
-                  {
-                    "Normal": "b"
-                  }
-                ]
+                "Cmd": {
+                  "remote": null,
+                  "words": [
+                    {
+                      "Normal": "b"
+                    }
+                  ]
+                }
               }
             }
           ],
@@ -187,11 +229,14 @@
             "Stdout",
             {
               "Command": {
-                "Cmd": [
-                  {
-                    "Normal": "c"
-                  }
-                ]
+                "Cmd": {
+                  "remote": null,
+                  "words": [
+                    {
+                      "Normal": "c"
+                    }
+                  ]
+                }
               }
             }
           ]
@@ -206,22 +251,28 @@
         {
           "Redirect": [
             {
-              "Cmd": [
-                {
-                  "Normal": "a"
-                }
-              ]
+              "Cmd": {
+                "remote": null,
+                "words": [
+                  {
+                    "Normal": "a"
+                  }
+                ]
+              }
             },
             [
               [
                 "Stdout",
                 {
                   "Command": {
-                    "Cmd": [
-                      {
-                        "Normal": "b"
-                      }
-                    ]
+                    "Cmd": {
+                      "remote": null,
+                      "words": [
+                        {
+                          "Normal": "b"
+                        }
+                      ]
+                    }
                   }
                 }
               ],
@@ -229,11 +280,14 @@
                 "Stdout",
                 {
                   "Command": {
-                    "Cmd": [
-                      {
-                        "Normal": "c"
-                      }
-                    ]
+                    "Cmd": {
+                      "remote": null,
+                      "words": [
+                        {
+                          "Normal": "c"
+                        }
+                      ]
+                    }
                   }
                 }
               ]
@@ -246,22 +300,28 @@
             {
               "Redirect": [
                 {
-                  "Cmd": [
-                    {
-                      "Normal": "d"
-                    }
-                  ]
+                  "Cmd": {
+                    "remote": null,
+                    "words": [
+                      {
+                        "Normal": "d"
+                      }
+                    ]
+                  }
                 },
                 [
                   [
                     "Stdout",
                     {
                       "Command": {
-                        "Cmd": [
-                          {
-                            "Normal": "e"
-                          }
-                        ]
+                        "Cmd": {
+                          "remote": null,
+                          "words": [
+                            {
+                              "Normal": "e"
+                            }
+                          ]
+                        }
                       }
                     }
                   ],
@@ -269,11 +329,14 @@
                     "Stdout",
                     {
                       "Command": {
-                        "Cmd": [
-                          {
-                            "Normal": "f"
-                          }
-                        ]
+                        "Cmd": {
+                          "remote": null,
+                          "words": [
+                            {
+                              "Normal": "f"
+                            }
+                          ]
+                        }
                       }
                     }
                   ]
@@ -286,22 +349,28 @@
             {
               "Redirect": [
                 {
-                  "Cmd": [
-                    {
-                      "Normal": "g"
-                    }
-                  ]
+                  "Cmd": {
+                    "remote": null,
+                    "words": [
+                      {
+                        "Normal": "g"
+                      }
+                    ]
+                  }
                 },
                 [
                   [
                     "Stdout",
                     {
                       "Command": {
-                        "Cmd": [
-                          {
-                            "Normal": "h"
-                          }
-                        ]
+                        "Cmd": {
+                          "remote": null,
+                          "words": [
+                            {
+                              "Normal": "h"
+                            }
+                          ]
+                        }
                       }
                     }
                   ],
@@ -309,11 +378,14 @@
                     "Stdout",
                     {
                       "Command": {
-                        "Cmd": [
-                          {
-                            "Normal": "i"
-                          }
-                        ]
+                        "Cmd": {
+                          "remote": null,
+                          "words": [
+                            {
+                              "Normal": "i"
+                            }
+                          ]
+                        }
                       }
                     }
                   ]

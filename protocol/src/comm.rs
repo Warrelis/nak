@@ -3,10 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use serde_json;
 
-use {
+use crate::{
     RemoteId,
     ProcessId,
     WritePipe,
+    GenericPipe,
     WriteProcess,
     ReadPipe,
     WritePipes,
@@ -23,6 +24,8 @@ use {
     Command,
     RemoteState,
     Ids,
+    PipeMessage,
+    PipeEnvelope,
 };
 
 use failure::Error;
@@ -36,8 +39,7 @@ pub trait EndpointHandler<T: Transport>: Sized {
     fn command_done(endpoint: &mut Endpoint<T, Self>, id: ProcessId, exit_code: i64) -> Result<(), Error>;
     fn directory_listing(endpoint: &mut Endpoint<T, Self>, id: usize, items: Vec<String>) -> Result<(), Error>;
     fn edit_request(endpoint: &mut Endpoint<T, Self>, edit_id: usize, command_id: ProcessId, name: String, data: Vec<u8>) -> Result<(), Error>;
-    fn pipe(endpoint: &mut Endpoint<T, Self>, id: ReadPipe, data: Vec<u8>) -> Result<(), Error>;
-    fn pipe_read(endpoint: &mut Endpoint<T, Self>, id: WritePipe, count_bytes: usize) -> Result<(), Error>;
+    fn pipe(endpoint: &mut Endpoint<T, Self>, id: GenericPipe, msg: PipeMessage) -> Result<(), Error>;
 }
 
 pub struct Endpoint<T: Transport, H: EndpointHandler<T>> {
@@ -83,6 +85,7 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
     }
 
     pub fn receive(&mut self, message: Response) -> Result<(), Error> {
+        // eprintln!("msg: {:?}", message);
         match message.message.0 {
             RemoteResponse::RemoteReady { info } => {
                 EndpointHandler::remote_ready(self, RemoteId(message.remote_id), info)
@@ -96,13 +99,9 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
             RemoteResponse::EditRequest { edit_id, command_id, name, data } => {
                 EndpointHandler::edit_request(self, edit_id, command_id, name, data)
             }
-            RemoteResponse::PipeData { id, data } => {
-                assert!(self.pipes.contains(&id));
-                EndpointHandler::pipe(self, ReadPipe(id), data)
-            }
-            RemoteResponse::PipeRead { id, count_bytes } => {
-                assert!(self.pipes.contains(&id));
-                EndpointHandler::pipe_read(self, WritePipe(id), count_bytes)
+            RemoteResponse::Pipe(pipe) => {
+                assert!(self.pipes.contains(&pipe.id));
+                EndpointHandler::pipe(self, GenericPipe(pipe.id), pipe.msg)
             }
         }
     }
@@ -222,6 +221,27 @@ impl<T: Transport, H: EndpointHandler<T>> Endpoint<T, H> {
 
         Ok(())
     }
+
+    pub fn pipe_read(&mut self, remote: RemoteId, id: ReadPipe, read_up_to: u64) -> Result<(), Error> {
+        self.trans.send(&ser_to_endpoint(remote, RemoteRequest::Pipe(PipeEnvelope {
+            id: id.0,
+            msg: PipeMessage::Read {
+                read_up_to,
+            },
+        })))?;
+
+        Ok(())
+    }
+
+    pub fn pipe_begin_read(&mut self, remote: RemoteId, id: ReadPipe) -> Result<(), Error> {
+        self.trans.send(&ser_to_endpoint(remote, RemoteRequest::Pipe(PipeEnvelope {
+            id: id.0,
+            msg: PipeMessage::BeginRead,
+        })))?;
+
+        Ok(())
+    }
+
 }
 
 pub trait BackendHandler {
@@ -233,8 +253,7 @@ pub trait BackendHandler {
     fn end_remote(&mut self, id: usize) -> Result<(), Error>;
     fn list_directory(&mut self, id: usize, path: String) -> Result<(), Error>;
     fn finish_edit(&mut self, id: usize, data: Vec<u8>) -> Result<(), Error>;
-    fn pipe_data(&mut self, id: usize, data: Vec<u8>) -> Result<(), Error>;
-    fn pipe_read(&mut self, id: usize, count_bytes: usize) -> Result<(), Error>;
+    fn pipe(&mut self, id: GenericPipe, msg: PipeMessage) -> Result<(), Error>;
 }
 
 #[derive(Default)]
@@ -244,6 +263,7 @@ pub struct Backend<T: Transport> {
 
 impl Request {
     pub fn route<H: BackendHandler>(self, handler: &mut H) -> Result<(), Error> {
+        // eprintln!("msg: {:?}", self);
         match self.message.0 {
             RemoteRequest::BeginCommand { block_for, process, command, } => {
                 let process = WriteProcess {
@@ -275,11 +295,8 @@ impl Request {
             RemoteRequest::FinishEdit { id, data, } => {
                 handler.finish_edit(id, data)
             }
-            RemoteRequest::PipeData { id, data, } => {
-                handler.pipe_data(id, data)
-            }
-            RemoteRequest::PipeRead { id, count_bytes, } => {
-                handler.pipe_read(id, count_bytes)
+            RemoteRequest::Pipe(pipe) => {
+                handler.pipe(GenericPipe(pipe.id), pipe.msg)
             }
         }
     }
@@ -300,11 +317,21 @@ impl<T: Transport> Backend<T> {
         Ok(())
     }
 
-    pub fn pipe(&mut self, id: WritePipe, data: Vec<u8>) -> Result<(), Error> {
-        self.trans.send(&ser_to_frontend(RemoteId(0), RemoteResponse::PipeData {
+    pub fn pipe_data(&mut self, id: WritePipe, data: Vec<u8>, end_offset: u64) -> Result<(), Error> {
+        self.trans.send(&ser_to_frontend(RemoteId(0), RemoteResponse::Pipe(PipeEnvelope {
             id: id.0,
-            data,
-        }))?;
+            msg: PipeMessage::Data { data, end_offset, },
+        })))?;
+
+        Ok(())
+    }
+
+    pub fn pipe_closed(&mut self, id: WritePipe, end_offset: u64) -> Result<(), Error> {
+        self.trans.send(&ser_to_frontend(RemoteId(0), RemoteResponse::Pipe(PipeEnvelope {
+            id: id.0,
+            msg: PipeMessage::Closed { end_offset },
+        })))?;
+
 
         Ok(())
     }

@@ -16,14 +16,9 @@ extern crate hostname;
 
 #[cfg(unix)] extern crate ctrlc;
 #[cfg(unix)] extern crate unix_socket;
-#[cfg(unix)] extern crate nix;
 
 mod machine;
 mod exec;
-
-#[cfg(unix)] mod run;
-
-#[cfg(unix)] use run::run_experiment;
 
 use std::collections::HashMap;
 use std::io::{Write, Read, BufRead, BufReader, Seek, SeekFrom};
@@ -57,9 +52,10 @@ use protocol::{
     Transport,
     Condition,
     ProcessId,
-    ExitStatus,
     Backend,
     RemoteInfo,
+    GenericPipe,
+    PipeMessage,
 };
 
 use exec::{Exec, RunCmd};
@@ -104,8 +100,12 @@ pub struct ExecHandler {
 }
 
 impl exec::Handler for ExecHandler {
-    fn pipe_output(&mut self, pipe: WritePipe, data: Vec<u8>) -> Result<(), Error> {
-        self.backtraffic.lock().unwrap().pipe(pipe, data)
+    fn pipe_output(&mut self, pipe: GenericPipe, data: Vec<u8>, end_offset: u64) -> Result<(), Error> {
+        self.backtraffic.lock().unwrap().pipe_data(pipe.to_write(), data, end_offset)
+    }
+
+    fn pipe_closed(&mut self, pipe: GenericPipe, end_offset: u64) -> Result<(), Error> {
+        self.backtraffic.lock().unwrap().pipe_closed(pipe.to_write(), end_offset)
     }
 
     fn command_result(&mut self, pid: ProcessId, exit_code: i64) -> Result<(), Error> {
@@ -254,12 +254,8 @@ impl BackendHandler for AsyncBackendHandler {
         Ok(())
     }
 
-    fn pipe_data(&mut self, _id: usize, _data: Vec<u8>) -> Result<(), Error> {
-        panic!();
-    }
-
-    fn pipe_read(&mut self, _id: usize, _count_bytes: usize) -> Result<(), Error> {
-        panic!();
+    fn pipe(&mut self, id: GenericPipe, msg: PipeMessage) -> Result<(), Error> {
+        self.exec.pipe(id, msg)
     }
 
 }
@@ -490,8 +486,6 @@ fn main() -> Result<(), Error> {
         run_pager()
     } else if args.len() == 3 && args[1] == "editor" {
         run_editor(&args[2])
-    } else if args.len() == 2 && args[1] == "experiment" {
-        run_experiment()
     } else {
         assert!(false);
         Err(format_err!("o.O?"))

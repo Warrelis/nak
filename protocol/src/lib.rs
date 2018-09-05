@@ -6,9 +6,9 @@ extern crate failure;
 
 mod comm;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-pub use comm::{
+pub use crate::comm::{
     EndpointHandler,
     Endpoint,
     BackendHandler,
@@ -91,6 +91,38 @@ impl WritePipe {
     }
 }
 
+impl GenericPipe {
+    pub fn to_write(&self) -> WritePipe {
+        WritePipe(self.0)
+    }
+
+    pub fn to_read(&self) -> ReadPipe {
+        ReadPipe(self.0)
+    }
+}
+
+pub struct Testing {
+    ids: Ids,
+}
+
+impl Testing {
+    pub fn new() -> Testing {
+        Testing {
+            ids: Ids::new(),
+        }
+    }
+
+    pub fn pipe(&mut self) -> (ReadPipe, WritePipe) {
+        let id = self.ids.next();
+
+        (ReadPipe(id), WritePipe(id))
+    }
+
+    pub fn process(&mut self) -> ProcessId {
+        ProcessId(self.ids.next())
+    }
+}
+
 pub struct ReadPipes {
     pub stdin: WritePipe,
     pub stdout: ReadPipe,
@@ -134,6 +166,27 @@ pub struct RemoteRequestEnvelope(RemoteRequest);
 pub struct RemoteResponseEnvelope(RemoteResponse);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PipeMessage {
+    BeginRead,
+    Data {
+        data: Vec<u8>,
+        end_offset: u64,
+    },
+    Read {
+        read_up_to: u64,
+    },
+    Closed {
+        end_offset: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PipeEnvelope<Id> {
+    id: Id,
+    msg: PipeMessage
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum RemoteRequest {
     BeginCommand {
         block_for: HashMap<ProcessId, Condition>,
@@ -166,14 +219,7 @@ enum RemoteRequest {
         id: usize,
         data: Vec<u8>,
     },
-    PipeData {
-        id: usize,
-        data: Vec<u8>,
-    },
-    PipeRead {
-        id: usize,
-        count_bytes: usize,
-    }
+    Pipe(PipeEnvelope<usize>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -195,14 +241,7 @@ pub enum RemoteResponse {
         name: String,
         data: Vec<u8>,
     },
-    PipeData {
-        id: usize,
-        data: Vec<u8>,
-    },
-    PipeRead {
-        id: usize,
-        count_bytes: usize,
-    }
+    Pipe(PipeEnvelope<usize>),
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -240,50 +279,5 @@ pub struct RemoteInfo {
     pub hostname: String,
     pub username: String,
     pub working_dir: String,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct TaskId(usize);
-
-pub struct Task {
-    remote: RemoteId,
-    input: Vec<WritePipe>,
-    output: Vec<ReadPipe>,
-}
-
-pub struct Plan {
-    tasks: HashMap<TaskId, Task>,
-    remote_to_tasks: HashMap<RemoteId, HashSet<TaskId>>,
-    task_dependencies: HashMap<TaskId, HashSet<TaskId>>,
-    pipes: HashMap<usize, (Option<TaskId>, Option<TaskId>)>,
-    next_task_id: usize,
-}
-
-impl Plan {
-    pub fn new() -> Plan {
-        Plan {
-            tasks: HashMap::new(),
-            remote_to_tasks: HashMap::new(),
-            task_dependencies: HashMap::new(),
-            pipes: HashMap::new(),
-            next_task_id: 0,
-        }
-    }
-
-    pub fn add_pipe(&mut self) -> (WritePipe, ReadPipe) {
-        panic!();
-    }
-
-    pub fn add_task(&mut self, task: Task) -> TaskId {
-        let id = TaskId(self.next_task_id);
-        self.next_task_id += 1;
-
-        self.remote_to_tasks.entry(task.remote).or_insert_with(HashSet::new).insert(id);
-        // self.task_dependencies.insert();
-
-        self.tasks.insert(id, task);
-
-        id
-    }
 }
 

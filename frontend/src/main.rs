@@ -1,11 +1,13 @@
+#![allow(unused)]
 
 #[macro_use]
 extern crate failure;
 #[macro_use]
 extern crate serde_derive;
+#[macro_use]
+extern crate structopt_derive;
+extern crate structopt;
 extern crate os_pipe;
-extern crate futures;
-extern crate tokio;
 extern crate base64;
 extern crate liner;
 extern crate serde;
@@ -15,11 +17,13 @@ extern crate libc;
 extern crate termion;
 extern crate tempfile;
 extern crate protocol;
+extern crate dirs;
 
 use std::sync::mpsc;
 use std::collections::{HashMap, HashSet};
 
 use failure::Error;
+use structopt::StructOpt;
 
 use protocol::{Response, Command, WritePipes, ProcessId, Condition};
 
@@ -29,10 +33,10 @@ mod prefs;
 mod comm;
 mod plan;
 
-use prefs::Prefs;
-use comm::{BackendEndpoint, launch_backend, EndpointExt};
-use edit::{SimpleReader};
-use plan::{Plan, RemoteStep, Step};
+use crate::prefs::Prefs;
+use crate::comm::{BackendEndpoint, launch_backend, EndpointExt};
+use crate::edit::{SimpleReader, Reader, SingleCommandReader};
+use crate::plan::{Plan, RemoteStep, Step};
 
 #[derive(Debug)]
 pub enum Event {
@@ -53,15 +57,15 @@ pub enum Shell {
     Exit,
 }
 
-struct Exec {
+struct Exec<R: Reader> {
     receiver: mpsc::Receiver<Event>,
     remote: BackendEndpoint,
-    reader: SimpleReader,
+    reader: R,
 }
 
-impl Exec {
+impl<R: Reader> Exec<R> {
     fn one_loop(&mut self) -> Result<bool, Error> {
-        if let Some(_) = self.remote.handler.waiting_for_remote {
+        if self.remote.handler.waiting_for_remote.is_some() {
             let msg = self.receiver.recv()?;
 
             match msg {
@@ -76,17 +80,19 @@ impl Exec {
                 }
             }
         } else {
-            if self.remote.handler.waiting_for.len() == 0 {
+            // eprintln!("waiting for {:?} {:?}", self.remote.handler.waiting_for, self.remote.handler.waiting_for_eof);
+            if self.remote.handler.waiting_for.len() == 0 && self.remote.handler.waiting_for_eof.len() == 0 {
                 for (remote, stream_id) in self.remote.handler.cwd_for_remote.drain() {
 
-                    let mut result = self.remote.handler.gathering_output.remove(&stream_id).unwrap();
+                    let mut result = self.remote.handler.finished_output.remove(&stream_id).unwrap();
 
                     for (id, rem) in self.remote.handler.remotes.iter_mut() {
                         if *id == remote {
-                            assert_eq!(result.pop(), Some(b'\n'));
-                            let text = String::from_utf8(result).unwrap();
-                            rem.working_dir = text;
-                            break;
+                            if result.pop() == Some(b'\n') {
+                                let text = String::from_utf8(result).unwrap();
+                                rem.working_dir = text;
+                                break;
+                            }
                         }
                     }
                 }
@@ -118,6 +124,7 @@ impl Exec {
                             let pid = self.remote.command(remote, cmd, HashMap::new(), WritePipes {
                                 stdin, stdout, stderr
                             })?;
+
                             wait.insert(pid);
                         }
                         Step::Remote(_remote_id, RemoteStep::Close) => {
@@ -141,9 +148,9 @@ impl Exec {
                 {
                     let remote = self.remote.cur_remote();
                     let (stdout_read, stdout_write) = self.remote.pipe();
-                    let (_stderr_read, stderr_write) = self.remote.pipe();
+                    let (stderr_read, stderr_write) = self.remote.pipe();
                     let (stdin_read, _stdin_write) = self.remote.pipe();
-                    let mut block_on: HashMap<ProcessId, Condition> = wait.iter().map(|&pid| (pid, None)).collect();
+                    let block_on: HashMap<ProcessId, Condition> = wait.iter().map(|&pid| (pid, None)).collect();
 
                     let pid = self.remote.command(remote, Command::GetDirectory, block_on, WritePipes {
                         stdin: stdin_read,
@@ -151,11 +158,35 @@ impl Exec {
                         stderr: stderr_write,
                     })?;
 
-                    self.remote.handler.gathering_output.insert(stdout_read, Vec::new());
+                    self.remote.pipe_begin_read(remote, stdout_read)?;
+                    self.remote.pipe_begin_read(remote, stderr_read)?;
+                    self.remote.pipe_read(remote, stdout_read, 1024*1024)?;
+                    self.remote.pipe_read(remote, stderr_read, 1024*1024)?;
 
-                    self.remote.handler.cwd_for_remote.insert(remote, stdout_read);
+                    self.remote.handler.gathering_output.insert(stdout_read.to_generic(), Vec::new());
+                    self.remote.handler.waiting_for_eof.insert(stdout_read.to_generic());
+
+                    self.remote.handler.stderr_pipes.insert(stderr_read.to_generic());
+
+                    self.remote.handler.cwd_for_remote.insert(remote, stdout_read.to_generic());
 
                     wait.insert(pid);
+                }
+
+                let remote = self.remote.cur_remote();
+
+                for pipe in plan.stdout {
+                    let stdout = pipe_pairs[pipe].0.take().unwrap();
+                    self.remote.pipe_begin_read(remote, stdout)?;
+                    self.remote.pipe_read(remote, stdout, 1024*1024)?;
+                    self.remote.handler.stdout_pipes.insert(stdout.to_generic());
+                }
+
+                for pipe in plan.stderr {
+                    let stderr = pipe_pairs[pipe].0.take().unwrap();
+                    self.remote.pipe_begin_read(remote, stderr)?;
+                    self.remote.pipe_read(remote, stderr, 1024*1024)?;
+                    self.remote.handler.stderr_pipes.insert(stderr.to_generic());
                 }
 
                 assert!(self.remote.handler.waiting_for.len() == 0);
@@ -169,8 +200,7 @@ impl Exec {
                         self.remote.receive(msg.clone())?;
                     }
                     Event::CtrlC => {
-                        let to_cancel = self.remote.handler.waiting_for.drain().collect::<Vec<ProcessId>>();
-                        for id in to_cancel {
+                        for id in self.remote.handler.waiting_for.iter().cloned().collect::<Vec<_>>() {
                             self.remote.cancel(id)?;
                         }
                     }
@@ -184,7 +214,7 @@ impl Exec {
     }
 }
 
-fn remote_run(receiver: mpsc::Receiver<Event>, remote: BackendEndpoint, reader: SimpleReader)
+fn remote_run(receiver: mpsc::Receiver<Event>, remote: BackendEndpoint, reader: impl Reader)
     -> Result<(), Error>
 {
     let mut exec = Exec {
@@ -195,9 +225,19 @@ fn remote_run(receiver: mpsc::Receiver<Event>, remote: BackendEndpoint, reader: 
 
     while exec.one_loop()? {}
 
-    exec.reader.save_history();
+    exec.reader.hacky_save_history();
 
     Ok(())
+}
+
+#[derive(StructOpt, Debug)]
+#[structopt(name = "nak")]
+struct MainOptions {
+    #[structopt(long = "backend")]
+    backend: Option<String>,
+
+    #[structopt(long = "command")]
+    command: Option<String>,
 }
 
 fn main() -> Result<(), Error> {
@@ -207,13 +247,19 @@ fn main() -> Result<(), Error> {
 
     let sender_clone = sender.clone();
 
-    ctrlc::set_handler(move || {
-        sender_clone.send(Event::CtrlC).unwrap();
-    }).expect("Error setting CtrlC handler");
+    let args = MainOptions::from_args();
 
-    let remote = launch_backend(sender)?;
+    let remote = launch_backend(sender, args.backend)?;
 
-    remote_run(receiver, remote, SimpleReader::new(prefs)?)?;
+    if let Some(command) = args.command {
+        remote_run(receiver, remote, SingleCommandReader::new(prefs, command))?;
+    } else {
+        ctrlc::set_handler(move || {
+            sender_clone.send(Event::CtrlC).unwrap();
+        }).expect("Error setting CtrlC handler");
+
+        remote_run(receiver, remote, SimpleReader::new(prefs)?)?;
+    }
 
     Ok(())
 }

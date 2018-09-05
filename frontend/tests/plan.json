@@ -1,0 +1,165 @@
+[
+  {
+    "input": "",
+    "output": {
+      "steps": [
+        "Pipe",
+        "Pipe"
+      ],
+      "stdin": 0,
+      "stdout": [
+        0
+      ],
+      "stderr": [
+        1
+      ],
+      "final_tool": null
+    }
+  },
+  {
+    "input": "  ",
+    "output": {
+      "steps": [
+        "Pipe",
+        "Pipe"
+      ],
+      "stdin": 0,
+      "stdout": [
+        0
+      ],
+      "stderr": [
+        1
+      ],
+      "final_tool": null
+    }
+  },
+  {
+    "input": "a",
+    "output": {
+      "steps": [
+        "Pipe",
+        "Pipe",
+        "Pipe",
+        {
+          "Remote": [
+            0,
+            {
+              "Run": [
+                {
+                  "Unknown": [
+                    "a",
+                    []
+                  ]
+                },
+                {
+                  "id": 0,
+                  "stdin": 2,
+                  "stdout": 0,
+                  "stderr": 1
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "stdin": 2,
+      "stdout": [
+        0
+      ],
+      "stderr": [
+        1
+      ],
+      "final_tool": null
+    }
+  },
+  {
+    "input": "a b c",
+    "output": {
+      "steps": [
+        "Pipe",
+        "Pipe",
+        "Pipe",
+        {
+          "Remote": [
+            0,
+            {
+              "Run": [
+                {
+                  "Unknown": [
+                    "a",
+                    [
+                      "b",
+                      "c"
+                    ]
+                  ]
+                },
+                {
+                  "id": 0,
+                  "stdin": 2,
+                  "stdout": 0,
+                  "stderr": 1
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "stdin": 2,
+      "stdout": [
+        0
+      ],
+      "stderr": [
+        1
+      ],
+      "final_tool": null
+    }
+  },
+  {
+    "input": "a>b",
+    "output": {
+      "steps": [
+        "Pipe",
+        "Pipe",
+        {
+          "Remote": [
+            0,
+            {
+              "OpenOutputFile": "b"
+            }
+          ]
+        },
+        "Pipe",
+        "Pipe",
+        {
+          "Remote": [
+            0,
+            {
+              "Run": [
+                {
+                  "Unknown": [
+                    "a",
+                    []
+                  ]
+                },
+                {
+                  "id": 0,
+                  "stdin": 4,
+                  "stdout": 2,
+                  "stderr": 3
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "stdin": 4,
+      "stdout": [
+        0
+      ],
+      "stderr": [
+        1
+      ],
+      "final_tool": null
+    }
+  }
+]

@@ -1,6 +1,5 @@
 
 use std::io::{stdin, stdout, Write};
-use std::env;
 use std::io;
 
 use failure::Error;
@@ -9,12 +8,14 @@ use termion::raw::IntoRawMode;
 use liner;
 use liner::{KeyMap, Editor, Buffer, KeyBindings, Emacs};
 use liner::EventHandler;
+use dirs;
 
-use comm::BackendEndpoint;
-use parse::{Ast, Cmd, parse_input, Target, Stream};
 use protocol::Command;
-use prefs::Prefs;
-use plan::{PlanBuilder, Plan, Remotes, RemoteRef};
+
+use crate::comm::BackendEndpoint;
+use crate::parse::{Ast, Cmd, parse_input, Target, Stream};
+use crate::prefs::Prefs;
+use crate::plan::{PlanBuilder, Plan, Remotes, RemoteRef};
 
 fn check_single_arg<'a>(items: impl Iterator<Item=String>) -> Result<String, Error> {
     let mut items = items;
@@ -104,8 +105,8 @@ fn parse_command_simple(remotes: &Remotes, prefs: &Prefs, input: &str) -> Result
     let stdin = convert_ast(remotes, prefs, &cmd, &mut p, stdout, stderr)?;
 
     p.set_stdin(Some(stdin));
-    p.set_stdout(Some(stdout));
-    p.set_stderr(Some(stderr));
+    p.add_stdout(stdout);
+    p.add_stderr(stderr);
 
     Ok(p.build())
 }
@@ -118,6 +119,44 @@ impl liner::Completer for SimpleCompleter {
     }
 }
 
+pub trait Reader {
+    fn get_command(&mut self, prompt: String, backend: &BackendEndpoint) -> Result<Plan, Error>;
+    fn hacky_save_history(&mut self);
+}
+
+pub struct SingleCommandReader {
+    prefs: Prefs,
+    text: Option<String>,
+}
+
+impl SingleCommandReader {
+    pub fn new(prefs: Prefs, text: String) -> SingleCommandReader {
+        SingleCommandReader {
+            prefs,
+            text: Some(text),
+        }
+    }
+}
+
+impl Reader for SingleCommandReader {
+    fn get_command(&mut self, _prompt: String, _backend: &BackendEndpoint) -> Result<Plan, Error> {
+        if let Some(text) = self.text.take() {
+            let remotes = &Remotes {
+                stack: vec![RemoteRef(0)],
+            };
+            let parsed = parse_command_simple(&remotes, &self.prefs, &text)?;
+
+            Ok(parsed)
+        } else {
+            let mut p = PlanBuilder::new();
+            p.exit(RemoteRef(0));
+            Ok(p.build())
+        }
+    }
+    fn hacky_save_history(&mut self) {
+    }
+}
+
 pub struct SimpleReader {
     prefs: Prefs,
     ctx: liner::Context,
@@ -126,7 +165,7 @@ pub struct SimpleReader {
 impl SimpleReader {
     pub fn new(prefs: Prefs) -> Result<SimpleReader, Error> {
         let mut history = liner::History::new();
-        history.set_file_name(Some(env::home_dir().unwrap().join(".config").join("nak").join("history.nak").into_os_string().into_string().unwrap()));
+        history.set_file_name(Some(dirs::home_dir().unwrap().join(".config").join("nak").join("history.nak").into_os_string().into_string().unwrap()));
         match history.load_history() {
             Ok(_) => {}
             Err(e) => {
@@ -147,8 +186,8 @@ impl SimpleReader {
     }
 }
 
-impl SimpleReader {
-    pub fn get_command(&mut self, prompt: String, _backend: &BackendEndpoint) -> Result<Plan, Error> {
+impl Reader for SimpleReader {
+    fn get_command(&mut self, prompt: String, _backend: &BackendEndpoint) -> Result<Plan, Error> {
 
         fn handle_keys<'a, T, W: Write, M: KeyMap<'a, W, T>>(
             mut keymap: M,
@@ -159,7 +198,7 @@ impl SimpleReader {
         {
             let stdin = stdin();
             for c in stdin.keys() {
-                if try!(keymap.handle_key(c.unwrap(), handler)) {
+                if keymap.handle_key(c.unwrap(), handler)? {
                     break;
                 }
             }
@@ -194,66 +233,59 @@ impl SimpleReader {
 
         let parsed = parse_command_simple(&remotes, &self.prefs, &res)?;
 
-        // match &parsed {
-        //     Shell::DoNothing => {}
-        //     _ => self.ctx.history.push(Buffer::from(res))?,
-        // }
         self.ctx.history.push(Buffer::from(res))?;
 
         Ok(parsed)
     }
 
-    pub fn save_history(&mut self) {
+    fn hacky_save_history(&mut self) {
         self.ctx.history.commit_history()
     }
 }
 
-#[test]
-fn parse_simple() {
-    // let c = parse_command_simple(&Prefs::default(), " test 1 abc 2").unwrap();
-    // assert_eq!(c, Plan {
-    //     cmd: Command::Unknown(
-    //         String::from("test"),
-    //         vec![
-    //             String::from("1"),
-    //             String::from("abc"),
-    //             String::from("2"),
-    //         ],
-    //     ),
-    //     redirect: None,
-    // });
-    // let c = parse_command_simple(&Prefs::git_alias_prefs(), "g c -am \"test message\"").unwrap();
-    // assert_eq!(c, Shell::Run {
-    //     cmd: Command::Unknown(
-    //         String::from("git"),
-    //         vec![
-    //             String::from("commit"),
-    //             String::from("-am"),
-    //             String::from("test message"),
-    //         ],
-    //     ),
-    //     redirect: None,
-    // });
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let remotes = &Remotes {
-        stack: vec![RemoteRef(0)],
-    };
+    use serde_json;
+    use std::fs::File;
+    use std::io::{Read, Write};
 
-    let p = parse_command_simple(remotes, &Prefs::default(), "").unwrap();
-    assert_eq!(p, Plan::empty());
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct ParserTest {
+        input: String,
+        output: Option<Plan>,
+    }
 
-    let p = parse_command_simple(remotes, &Prefs::default(), "  ").unwrap();
-    assert_eq!(p, Plan::empty());
+    #[test]
+    fn parse_simple() {
 
-    let p = parse_command_simple(remotes, &Prefs::default(), "a").unwrap();
-    assert_eq!(p, Plan::single(RemoteRef(0), vec![String::from("a")], None));
+        let remotes = &Remotes {
+            stack: vec![RemoteRef(0)],
+        };
 
-    let p = parse_command_simple(remotes, &Prefs::default(), "a b c").unwrap();
-    assert_eq!(p, Plan::single(RemoteRef(0), vec![String::from("a"), String::from("b"), String::from("c")], None));
+        let mut contents = String::new();
+        File::open("tests/plan.json").unwrap().read_to_string(&mut contents).unwrap();
+        let tests: Vec<ParserTest> = serde_json::from_str(&contents).unwrap();
 
-    let p = parse_command_simple(remotes, &Prefs::default(), "a>b").unwrap();
-    // assert_eq!(p, Plan::single(RemoteRef(0), vec![String::from("a")], Some((RemoteRef(0), String::from("b")))));
+        for test in tests.iter() {
+            eprintln!("test: {}", test.input);
+            let output = parse_command_simple(remotes, &Prefs::default(), &test.input).unwrap();
+            eprintln!("  output: {:#?}", output);
+
+            if let Some(ref expected) = test.output {
+                assert_eq!(expected, &output);
+            }
+        }
+
+        let actual = tests.iter()
+            .map(|t| ParserTest {
+                input: t.input.clone(),
+                output: Some(parse_command_simple(remotes, &Prefs::default(), &t.input).unwrap())
+            }).collect::<Vec<_>>();
+
+        File::create("tests/plan.actual.json").unwrap().write_all(serde_json::to_string_pretty(&actual).unwrap().as_bytes()).unwrap();
+    }
 }
-
 
 

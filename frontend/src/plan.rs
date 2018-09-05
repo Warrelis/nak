@@ -1,14 +1,15 @@
+use std::collections::HashSet;
 
 use protocol::{Command, Ids};
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RemoteRef(pub usize);
 
 pub struct Remotes {
     pub stack: Vec<RemoteRef>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanProcess {
     id: usize,
     pub stdin: usize,
@@ -16,7 +17,7 @@ pub struct PlanProcess {
     pub stderr: usize,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RemoteStep {
     OpenInputFile(String),
     OpenOutputFile(String),
@@ -25,7 +26,7 @@ pub enum RemoteStep {
     Close,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Step {
     Remote(RemoteRef, RemoteStep),
     Pipe,
@@ -33,12 +34,12 @@ pub enum Step {
     Editor,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
     pub steps: Vec<Step>,
     pub stdin: Option<usize>,
-    pub stdout: Option<usize>,
-    pub stderr: Option<usize>,
+    pub stdout: HashSet<usize>,
+    pub stderr: HashSet<usize>,
     pub final_tool: Option<FinalTool>,
 }
 
@@ -46,12 +47,11 @@ impl Plan {
     pub fn empty() -> Plan {
         let mut b = PlanBuilder::new();
 
-        let stdin = b.pipe();
-        b.set_stdin(Some(stdin));
         let stdout = b.pipe();
-        b.set_stdout(Some(stdout));
+        b.set_stdin(Some(stdout));
+        b.add_stdout(stdout);
         let stderr = b.pipe();
-        b.set_stderr(Some(stderr));
+        b.add_stderr(stderr);
 
         b.build()
     }
@@ -64,7 +64,6 @@ impl Plan {
         let mut b = PlanBuilder::new();
 
         let stdin = b.pipe();
-        let stderr = b.pipe();
 
         let (output, stdout) = if let Some((remote, file)) = redirect {
             (b.add_file_output(remote, file), None)
@@ -72,18 +71,21 @@ impl Plan {
             let output = b.pipe();
             (output, Some(output))
         };
+        let stderr = b.pipe();
 
         b.add_command(remote, Command::Unknown(head, rest), stdin, output, stderr);
 
         b.set_stdin(Some(stdin));
-        b.set_stdout(stdout);
-        b.set_stderr(Some(stderr));
+        if let Some(stdout) = stdout {
+            b.add_stdout(stdout);
+        }
+        b.add_stderr(stderr);
 
         b.build()
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FinalTool {
     Pager,
     Editor,
@@ -100,8 +102,8 @@ impl PlanBuilder {
         PlanBuilder {
             plan: Plan {
                 steps: Vec::new(),
-                stdout: None,
-                stderr: None,
+                stdout: HashSet::new(),
+                stderr: HashSet::new(),
                 stdin: None,
                 final_tool: None,
             },
@@ -146,17 +148,17 @@ impl PlanBuilder {
         self.plan.stdin = stdin;
     }
 
-    pub fn set_stdout(&mut self, stdout: Option<usize>) {
-        self.plan.stdout = stdout;
+    pub fn add_stdout(&mut self, stdout: usize) {
+        self.plan.stdout.insert(stdout);
     }
 
-    pub fn set_stderr(&mut self, stderr: Option<usize>) {
-        self.plan.stderr = stderr;
+    pub fn add_stderr(&mut self, stderr: usize) {
+        self.plan.stderr.insert(stderr);
     }
 
-    pub fn set_final_tool(&mut self, final_tool: Option<FinalTool>) {
-        self.plan.final_tool = final_tool;
-    }
+    // pub fn set_final_tool(&mut self, final_tool: Option<FinalTool>) {
+    //     self.plan.final_tool = final_tool;
+    // }
 
     pub fn add_command(&mut self, remote: RemoteRef, cmd: Command, stdin: usize, stdout: usize, stderr: usize) {
         self.use_read_end(stdin);

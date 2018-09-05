@@ -27,9 +27,11 @@ use protocol::{
     ReadProcess,
     RemoteInfo,
     WritePipes,
+    PipeMessage,
+    GenericPipe,
 };
 
-use Event;
+use crate::Event;
 
 pub struct PipeTransport {
     input: PipeWriter,
@@ -46,10 +48,13 @@ impl Transport for PipeTransport {
 pub struct StackedRemotes {
     pub remotes: Vec<(RemoteId, RemoteInfo)>,
     pub waiting_for: HashSet<ProcessId>,
+    pub waiting_for_eof: HashSet<GenericPipe>,
     pub waiting_for_remote: Option<RemoteId>,
-    pub gathering_output: HashMap<ReadPipe, Vec<u8>>,
-    pub cwd_for_remote: HashMap<RemoteId, ReadPipe>,
-
+    pub gathering_output: HashMap<GenericPipe, Vec<u8>>,
+    pub finished_output: HashMap<GenericPipe, Vec<u8>>,
+    pub cwd_for_remote: HashMap<RemoteId, GenericPipe>,
+    pub stdout_pipes: HashSet<GenericPipe>,
+    pub stderr_pipes: HashSet<GenericPipe>,
 }
 
 impl<T: Transport> EndpointHandler<T> for StackedRemotes {
@@ -60,11 +65,26 @@ impl<T: Transport> EndpointHandler<T> for StackedRemotes {
         Ok(())
     }
 
-    fn pipe(endpoint: &mut Endpoint<T, Self>, id: ReadPipe, data: Vec<u8>) -> Result<(), Error> {
-        if let Some(out) = endpoint.handler.gathering_output.get_mut(&id) {
-            out.extend(data)
-        } else {
-            io::stdout().write_all(&data)?;
+    fn pipe(endpoint: &mut Endpoint<T, Self>, id: GenericPipe, msg: PipeMessage) -> Result<(), Error> {
+        match msg {
+            PipeMessage::Data { data, end_offset: _ } => {
+                if let Some(out) = endpoint.handler.gathering_output.get_mut(&id) {
+                    out.extend(data)
+                } else if endpoint.handler.stdout_pipes.contains(&id) {
+                    io::stdout().write_all(&data)?;
+                } else if endpoint.handler.stderr_pipes.contains(&id) {
+                    io::stderr().write_all(&data)?;
+                } else {
+                    panic!("bad pipe {:?} {:?} {:?}", id, endpoint.handler.stdout_pipes, endpoint.handler.stderr_pipes);
+                }
+            }
+            PipeMessage::Closed { .. } => {
+                endpoint.handler.waiting_for_eof.remove(&id);
+                if let Some(output) = endpoint.handler.gathering_output.remove(&id) {
+                    endpoint.handler.finished_output.insert(id, output);
+                }
+            }
+            _ => panic!("{:?}", msg),
         }
         Ok(())
     }
@@ -97,15 +117,11 @@ impl<T: Transport> EndpointHandler<T> for StackedRemotes {
         endpoint.finish_edit(command_id, edit_id, new_data)?;
         Ok(())
     }
-
-    fn pipe_read(_endpoint: &mut Endpoint<T, Self>, _id: WritePipe, _count_bytes: usize) -> Result<(), Error> {
-        panic!();
-    }
 }
 
 pub type BackendEndpoint = Endpoint<PipeTransport, StackedRemotes>;
 
-pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendEndpoint, Error> {
+pub fn launch_backend(sender: mpsc::Sender<Event>, name: Option<String>) -> Result<BackendEndpoint, Error> {
 
     let (output_reader, output_writer) = os_pipe::pipe()?;
     let (input_reader, input_writer) = os_pipe::pipe()?;
@@ -113,8 +129,9 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendEndpoint, Er
     let pid = unsafe { libc::fork() };
 
     if pid == 0 {
-        let mut cmd = pr::Command::new("nak-backend");
+        let mut cmd = pr::Command::new(name.unwrap_or(String::from("nak-backend")));
 
+        cmd.env("RUST_BACKTRACE", "1");
         cmd.stdout(output_writer.into_stdio());
         cmd.stderr(fs::OpenOptions::new().create(true).append(true).open("/tmp/nak.log")?);
         cmd.stdin(input_reader.into_stdio());
@@ -128,9 +145,13 @@ pub fn launch_backend(sender: mpsc::Sender<Event>) -> Result<BackendEndpoint, Er
     let stacked_remotes = StackedRemotes {
         remotes: vec![],
         waiting_for: HashSet::new(),
+        waiting_for_eof: HashSet::new(),
         waiting_for_remote: None,
         gathering_output: HashMap::new(),
+        finished_output: HashMap::new(),
         cwd_for_remote: HashMap::new(),
+        stdout_pipes: HashSet::new(),
+        stderr_pipes: HashSet::new(),
     };
 
     let mut endpoint = Endpoint::new(

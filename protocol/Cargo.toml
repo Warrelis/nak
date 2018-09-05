@@ -1,7 +1,10 @@
+cargo-features = ["edition"]
+
 [package]
 name = "protocol"
 version = "0.1.0"
 authors = ["Joshua Warner <joshw@dropbox.com>"]
+edition = "2018"
 
 [dependencies]
 serde = "*"
