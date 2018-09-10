@@ -41,7 +41,7 @@ Built by joshuawarner32@gmail.com in San Francisco, with 💜 and :rust:.
 ### Aspirations
 
 - [ ] Allow piping between two connected remotes
-- [ ] Uniform `ssh <command>` syntax, that doesn't require quoting
+- [ ] Uniform `ssh server <command>` syntax, that doesn't require quoting
 - [ ] Allow editing multiple files: sandbox an editor to present a fake (remote) filesystem
 - [ ] General-purpose "repl" standin, used when launching common repls
 
