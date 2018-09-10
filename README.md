@@ -1,5 +1,7 @@
 # Nak
 
+** NOTE: this is a very early, pre-alpha experiment! **
+
 Ever been frustrated that your aliases aren’t available on every server you SSH to? Don’t like the default bash command keybindings? Trying to `<option-left>` to skip-by-word, only to find that you end up with `;9D` junk in your terminal instead? Worry no more!
 
 TL;DR: Nak is a new unix shell - but it’s also a whole new way to build shells.  Nak focuses on centralizing all user customization options on the original host, and respects those customizations even across ssh connections.
@@ -14,6 +16,34 @@ These processes communicate via json-rpc over `stdin` and `stdout`, which makes 
 One of the central goals of Nak is to make it easy to implement new frontends and backends. Implementing a new frontend allows developers to further customize the experience, and adding new backends allows Nak’s customization to follow any user into new environments.
 
 Built by joshuawarner32@gmail.com in San Francisco, with 💜 and :rust:.
+
+## TODO
+
+(aka "what's currently broken")
+
+[ ] Programs that read from stdin (unbreak now!!!)
+[ ] Programs that require a pty (case-by-case hackery)
+  [x] micro (my terminal editor of choice)
+  [ ] $EDITOR (in general)
+  [ ] less
+[ ] Programs that require a pty (general solution)
+[ ] Fancy piping (anything beyond piping to a file is untested, and unlikely to work)
+[ ] `if`/`while`/etc
+[ ] Functions
+[ ] Tab completion
+
+### Things that need cleanup
+
+[ ] Preferences format
+[ ] Per-remote-machine history
+[ ] Line editing
+
+### Aspirations
+
+[ ] Allow piping between two connected remotes
+[ ] Uniform `ssh <command>` syntax, that doesn't require quoting
+[ ] Allow editing multiple files: sandbox an editor to present a fake (remote) filesystem
+[ ] General-purpose "repl" standin, used when launching common repls
 
 ## License
 Unless otherwise noted:
@@ -33,3 +63,4 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ```
+See LICENCE for details.
