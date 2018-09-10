@@ -21,29 +21,29 @@ Built by joshuawarner32@gmail.com in San Francisco, with 💜 and :rust:.
 
 (aka "what's currently broken")
 
-[ ] Programs that read from stdin (unbreak now!!!)
-[ ] Programs that require a pty (case-by-case hackery)
-  [x] micro (my terminal editor of choice)
-  [ ] $EDITOR (in general)
-  [ ] less
-[ ] Programs that require a pty (general solution)
-[ ] Fancy piping (anything beyond piping to a file is untested, and unlikely to work)
-[ ] `if`/`while`/etc
-[ ] Functions
-[ ] Tab completion
+- [ ] Programs that read from stdin (unbreak now!!!)
+- [ ] Programs that require a pty (case-by-case hackery)
+  - [x] micro (my terminal editor of choice)
+  - [ ] $EDITOR (in general)
+  - [ ] less
+- [ ] Programs that require a pty (general solution)
+- [ ] Fancy piping (anything beyond piping to a file is untested, and unlikely to work)
+- [ ] `if`/`while`/etc
+- [ ] Functions
+- [ ] Tab completion
 
 ### Things that need cleanup
 
-[ ] Preferences format
-[ ] Per-remote-machine history
-[ ] Line editing
+- [ ] Preferences format
+- [ ] Per-remote-machine history
+- [ ] Line editing
 
 ### Aspirations
 
-[ ] Allow piping between two connected remotes
-[ ] Uniform `ssh <command>` syntax, that doesn't require quoting
-[ ] Allow editing multiple files: sandbox an editor to present a fake (remote) filesystem
-[ ] General-purpose "repl" standin, used when launching common repls
+- [ ] Allow piping between two connected remotes
+- [ ] Uniform `ssh <command>` syntax, that doesn't require quoting
+- [ ] Allow editing multiple files: sandbox an editor to present a fake (remote) filesystem
+- [ ] General-purpose "repl" standin, used when launching common repls
 
 ## License
 Unless otherwise noted:
