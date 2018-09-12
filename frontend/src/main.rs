@@ -36,7 +36,7 @@ mod plan;
 use crate::prefs::Prefs;
 use crate::comm::{BackendEndpoint, launch_backend, EndpointExt};
 use crate::edit::{SimpleReader, Reader, SingleCommandReader};
-use crate::plan::{Plan, RemoteStep, Step};
+use crate::plan::{Plan, RemoteStep, Step, Sink};
 
 #[derive(Debug)]
 pub enum Event {
@@ -175,18 +175,32 @@ impl<R: Reader> Exec<R> {
 
                 let remote = self.remote.cur_remote();
 
-                for pipe in plan.stdout {
-                    let stdout = pipe_pairs[pipe].0.take().unwrap();
-                    self.remote.pipe_begin_read(remote, stdout)?;
-                    self.remote.pipe_read(remote, stdout, 1024*1024)?;
-                    self.remote.handler.stdout_pipes.insert(stdout.to_generic());
-                }
+                for (pipe, sink) in plan.sink_map.iter().enumerate() {
+                    if let Some(sink) = sink {
+                        let comm_pipe = pipe_pairs[pipe].0.take().unwrap();
+                        self.remote.pipe_begin_read(remote, comm_pipe)?;
+                        self.remote.pipe_read(remote, comm_pipe, 1024*1024)?;
 
-                for pipe in plan.stderr {
-                    let stderr = pipe_pairs[pipe].0.take().unwrap();
-                    self.remote.pipe_begin_read(remote, stderr)?;
-                    self.remote.pipe_read(remote, stderr, 1024*1024)?;
-                    self.remote.handler.stderr_pipes.insert(stderr.to_generic());
+                        match sink {
+                            Sink::DevNull => {
+                                // TODO: tell backend to throw away data
+                            }
+                            Sink::Stdout => {
+                                self.remote.handler.stdout_pipes.insert(comm_pipe.to_generic());
+                            }
+                            Sink::Stderr => {
+                                self.remote.handler.stderr_pipes.insert(comm_pipe.to_generic());
+                            }
+                            Sink::Gather(id) => {
+                                // Should be unused...
+                                panic!();
+                            }
+                            Sink::Pager(id) => {
+                                // Should be unused...
+                                panic!();
+                            }
+                        }
+                    }
                 }
 
                 assert!(self.remote.handler.waiting_for.len() == 0);

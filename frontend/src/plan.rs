@@ -35,12 +35,27 @@ pub enum Step {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Sink {
+    DevNull,
+    Stdout,
+    Stderr,
+    Gather(GatherId),
+    Pager(PagerId),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GatherId(usize);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PagerId(usize);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
     pub steps: Vec<Step>,
     pub stdin: Option<usize>,
-    pub stdout: HashSet<usize>,
-    pub stderr: HashSet<usize>,
-    pub final_tool: Option<FinalTool>,
+    pub gather_count: usize,
+    pub pager_count: usize,
+    pub sink_map: Vec<Option<Sink>>,
 }
 
 impl Plan {
@@ -85,12 +100,6 @@ impl Plan {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum FinalTool {
-    Pager,
-    Editor,
-}
-
 pub struct PlanBuilder {
     plan: Plan,
     proc_ids: Ids,
@@ -102,10 +111,10 @@ impl PlanBuilder {
         PlanBuilder {
             plan: Plan {
                 steps: Vec::new(),
-                stdout: HashSet::new(),
-                stderr: HashSet::new(),
                 stdin: None,
-                final_tool: None,
+                gather_count: 0,
+                pager_count: 0,
+                sink_map: Vec::new(),
             },
             proc_ids: Ids::new(),
             pipes: Vec::new(),
@@ -149,16 +158,12 @@ impl PlanBuilder {
     }
 
     pub fn add_stdout(&mut self, stdout: usize) {
-        self.plan.stdout.insert(stdout);
+        self.sink(stdout, Sink::Stdout);
     }
 
     pub fn add_stderr(&mut self, stderr: usize) {
-        self.plan.stderr.insert(stderr);
+        self.sink(stderr, Sink::Stderr);
     }
-
-    // pub fn set_final_tool(&mut self, final_tool: Option<FinalTool>) {
-    //     self.plan.final_tool = final_tool;
-    // }
 
     pub fn add_command(&mut self, remote: RemoteRef, cmd: Command, stdin: usize, stdout: usize, stderr: usize) {
         self.use_read_end(stdin);
@@ -171,6 +176,26 @@ impl PlanBuilder {
             stdout,
             stderr,
         })));
+    }
+
+    pub fn add_gather(&mut self) -> GatherId {
+        let id = self.plan.gather_count;
+        self.plan.gather_count += 1;
+        GatherId(id)
+    }
+
+    pub fn add_pager(&mut self) -> PagerId {
+        let id = self.plan.pager_count;
+        self.plan.pager_count += 1;
+        PagerId(id)
+    }
+
+    pub fn sink(&mut self, stream: usize, sink: Sink) {
+        while self.plan.sink_map.len() <= stream {
+            self.plan.sink_map.push(None);
+        }
+        assert!(self.plan.sink_map[stream].is_none());
+        self.plan.sink_map[stream] = Some(sink);
     }
 }
 

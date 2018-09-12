@@ -7,13 +7,12 @@
         "Pipe"
       ],
       "stdin": 0,
-      "stdout": [
-        0
-      ],
-      "stderr": [
-        1
-      ],
-      "final_tool": null
+      "gather_count": 0,
+      "pager_count": 0,
+      "sink_map": [
+        "Stdout",
+        "Stderr"
+      ]
     }
   },
   {
@@ -24,13 +23,12 @@
         "Pipe"
       ],
       "stdin": 0,
-      "stdout": [
-        0
-      ],
-      "stderr": [
-        1
-      ],
-      "final_tool": null
+      "gather_count": 0,
+      "pager_count": 0,
+      "sink_map": [
+        "Stdout",
+        "Stderr"
+      ]
     }
   },
   {
@@ -63,13 +61,12 @@
         }
       ],
       "stdin": 2,
-      "stdout": [
-        0
-      ],
-      "stderr": [
-        1
-      ],
-      "final_tool": null
+      "gather_count": 0,
+      "pager_count": 0,
+      "sink_map": [
+        "Stdout",
+        "Stderr"
+      ]
     }
   },
   {
@@ -105,13 +102,12 @@
         }
       ],
       "stdin": 2,
-      "stdout": [
-        0
-      ],
-      "stderr": [
-        1
-      ],
-      "final_tool": null
+      "gather_count": 0,
+      "pager_count": 0,
+      "sink_map": [
+        "Stdout",
+        "Stderr"
+      ]
     }
   },
   {
@@ -153,13 +149,12 @@
         }
       ],
       "stdin": 4,
-      "stdout": [
-        0
-      ],
-      "stderr": [
-        1
-      ],
-      "final_tool": null
+      "gather_count": 0,
+      "pager_count": 0,
+      "sink_map": [
+        "Stdout",
+        "Stderr"
+      ]
     }
   }
 ]
