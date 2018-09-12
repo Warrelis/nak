@@ -303,11 +303,11 @@ impl ExecInternal {
             Command::GetDirectory => {
                 match env::current_dir() {
                     Ok(dir) => {
-                        self.pipe_output_and_close(c.pipes, vec![], format!("{}\n", dir.display()).into_bytes())?;
+                        self.pipe_output_and_close(c.pipes, format!("{}\n", dir.display()).into_bytes(), vec![])?;
                         Ok(RunResult::AlreadyDone(0))
                     }
                     Err(e) => {
-                        self.pipe_output_and_close(c.pipes, format!("Error: {:?}", e).into_bytes(), vec![])?;
+                        self.pipe_output_and_close(c.pipes, vec![], format!("Error: {:?}", e).into_bytes())?;
                         Ok(RunResult::AlreadyDone(1))
                     }
                 }
