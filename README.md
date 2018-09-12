@@ -31,6 +31,7 @@ Built by joshuawarner32@gmail.com in San Francisco, with 💜 and :rust:.
 - [ ] `if`/`while`/etc
 - [ ] Functions
 - [ ] Tab completion
+- [ ] Variables
 
 ### Things that need cleanup
 

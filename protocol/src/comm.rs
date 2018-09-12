@@ -268,9 +268,11 @@ impl Request {
             RemoteRequest::BeginCommand { block_for, process, command, } => {
                 let process = WriteProcess {
                     id: process.id,
-                    stdin: ReadPipe(process.stdin),
-                    stdout: WritePipe(process.stdout),
-                    stderr: WritePipe(process.stderr),
+                    pipes: WritePipes {
+                        stdin: ReadPipe(process.stdin),
+                        stdout: WritePipe(process.stdout),
+                        stderr: WritePipe(process.stderr),
+                    },
                 };
                 handler.begin_command(block_for, process, command)
             }

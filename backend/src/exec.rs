@@ -19,6 +19,7 @@ use protocol::{
     Command,
     ReadPipe,
     WritePipe,
+    WritePipes,
     ExitStatus,
     Condition,
     Ids,
@@ -30,9 +31,7 @@ use machine::{Machine, Task, Status};
 
 pub struct RunCmd {
     pub cmd: Command,
-    pub stdin: ReadPipe,
-    pub stdout: WritePipe,
-    pub stderr: WritePipe,
+    pub pipes: WritePipes,
 }
 
 enum ProcessState {
@@ -171,7 +170,7 @@ impl ExecInternal {
             for t in tasks {
                 match t {
                     Task::Start(pid, cmd) => {
-                        let stderr = cmd.stderr;
+                        let pipes = cmd.pipes;
                         match self.run(pid, cmd) {
                             Ok(RunResult::Process(state)) => self.machine.start(pid, state),
                             Ok(RunResult::AlreadyDone(exit_code)) => {
@@ -183,7 +182,7 @@ impl ExecInternal {
                                 new_tasks.extend(
                                     self.machine.start_completed(pid, ExitStatus::Failure));
                                 // TODO: perhaps this should go back on a custom error stream (rather than stderr?)
-                                self.pipe_output_and_close(stderr, format!("{:?}", e).into_bytes())?;
+                                self.pipe_output_and_close(pipes, vec![], format!("{:?}", e).into_bytes())?;
                                 self.handler.command_result(pid, 1)?;
                             }
                         }
@@ -257,9 +256,9 @@ impl ExecInternal {
                 //     id,
                 // });
 
-                self.read_end(c.stdin).assign_stdin(&mut cmd);
-                self.write_end(c.stdout).assign_stdout(&mut cmd);
-                self.write_end(c.stderr).assign_stderr(&mut cmd);
+                self.read_end(c.pipes.stdin).assign_stdin(&mut cmd);
+                self.write_end(c.pipes.stdout).assign_stdout(&mut cmd);
+                self.write_end(c.pipes.stderr).assign_stderr(&mut cmd);
 
                 let handle = Arc::new(Mutex::new(cmd.spawn()?));
                 let cancel_handle = handle.clone();
@@ -288,11 +287,15 @@ impl ExecInternal {
             Command::SetDirectory(dir) => {
                 match env::set_current_dir(dir) {
                     Ok(o) => {
-                        self.pipe_output_and_close(c.stderr, format!("Success: {:?}", o).into_bytes())?;
+                        self.pipe_output_and_close(c.pipes,
+                            format!("Success: {:?}", o).into_bytes(),
+                            vec![])?;
                         Ok(RunResult::AlreadyDone(0))
                     }
                     Err(e) => {
-                        self.pipe_output_and_close(c.stderr, format!("Error: {:?}", e).into_bytes())?;
+                        self.pipe_output_and_close(c.pipes,
+                            format!("Error: {:?}", e).into_bytes(),
+                            vec![])?;
                         Ok(RunResult::AlreadyDone(1))
                     }
                 }
@@ -300,11 +303,11 @@ impl ExecInternal {
             Command::GetDirectory => {
                 match env::current_dir() {
                     Ok(dir) => {
-                        self.pipe_output_and_close(c.stdout, format!("{}\n", dir.display()).into_bytes())?;
+                        self.pipe_output_and_close(c.pipes, vec![], format!("{}\n", dir.display()).into_bytes())?;
                         Ok(RunResult::AlreadyDone(0))
                     }
                     Err(e) => {
-                        self.pipe_output_and_close(c.stderr, format!("Error: {:?}", e).into_bytes())?;
+                        self.pipe_output_and_close(c.pipes, format!("Error: {:?}", e).into_bytes(), vec![])?;
                         Ok(RunResult::AlreadyDone(1))
                     }
                 }
@@ -389,13 +392,22 @@ impl ExecInternal {
         Ok(())
     }
 
-    fn pipe_output_and_close(&mut self, pipe: WritePipe, data: Vec<u8>) -> Result<(), Error> {
-        let mut handle = self.write_end(pipe);
+    fn pipe_output_and_close(&mut self, pipes: WritePipes, stdout: Vec<u8>, stderr: Vec<u8>) -> Result<(), Error> {
+        fn pipe_and_close(pipe: WritePipe, mut handle: OutputPipe, data: Vec<u8>) -> Result<(), Error> {
 
-        thread::spawn(move || {
-            handle.handle.write_all(&data).expect("write all input buffer");
-            eprintln!("closing {:?} {:?}", pipe, data.len());
-        });
+            if data.len() > 0 {
+                thread::spawn(move || {
+                    handle.handle.write_all(&data).expect("write all input buffer");
+                    eprintln!("closing {:?} {:?}", pipe, data.len());
+                });
+            } else {
+                drop(handle);
+            }
+            Ok(())
+        }
+
+        pipe_and_close(pipes.stdout, self.write_end(pipes.stdout), stdout)?;
+        pipe_and_close(pipes.stderr, self.write_end(pipes.stderr), stderr)?;
         Ok(())
     }
 

@@ -123,12 +123,14 @@ impl Testing {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReadPipes {
     pub stdin: WritePipe,
     pub stdout: ReadPipe,
     pub stderr: ReadPipe,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WritePipes {
     pub stdin: ReadPipe,
     pub stdout: WritePipe,
@@ -138,17 +140,13 @@ pub struct WritePipes {
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WriteProcess {
     pub id: ProcessId,
-    pub stdin: ReadPipe,
-    pub stdout: WritePipe,
-    pub stderr: WritePipe,
+    pub pipes: WritePipes,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReadProcess {
     pub id: ProcessId,
-    pub stdin: WritePipe,
-    pub stdout: ReadPipe,
-    pub stderr: ReadPipe,
+    pub pipes: ReadPipes,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]

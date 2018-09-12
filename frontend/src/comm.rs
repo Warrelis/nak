@@ -24,6 +24,7 @@ use protocol::{
     ProcessId,
     WritePipe,
     ReadPipe,
+    ReadPipes,
     ReadProcess,
     RemoteInfo,
     WritePipes,
@@ -220,9 +221,11 @@ impl EndpointExt for BackendEndpoint {
             })?;
             Ok(ReadProcess {
                 id,
-                stdin: stdin_write,
-                stdout: stdout_read,
-                stderr: stderr_read,
+                pipes: ReadPipes {
+                    stdin: stdin_write,
+                    stdout: stdout_read,
+                    stderr: stderr_read,
+                },
             })
         } else {
             let (stdout_read, stdout_write) = self.pipe();
@@ -231,9 +234,11 @@ impl EndpointExt for BackendEndpoint {
             })?;
             Ok(ReadProcess {
                 id,
-                stdin: stdin_write,
-                stdout: stdout_read,
-                stderr: stderr_read,
+                pipes: ReadPipes {
+                    stdin: stdin_write,
+                    stdout: stdout_read,
+                    stderr: stderr_read,
+                },
             })
         }
     }

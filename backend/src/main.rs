@@ -212,9 +212,7 @@ impl BackendHandler for AsyncBackendHandler {
     fn begin_command(&mut self, block_for: HashMap<ProcessId, Condition>, process: WriteProcess, command: Command) -> Result<(), Error> {
         let cmd = RunCmd {
             cmd: command,
-            stdin: process.stdin,
-            stdout: process.stdout,
-            stderr: process.stderr,
+            pipes: process.pipes,
         };
         self.exec.enqueue(process.id, cmd, block_for)?;
         Ok(())
