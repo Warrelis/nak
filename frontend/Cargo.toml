@@ -1,5 +1,3 @@
-cargo-features = ["edition"]
-
 [package]
 authors = ["Joshua Warner <joshw@dropbox.com>"]
 name = "frontend"

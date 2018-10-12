@@ -4,4 +4,5 @@ members = [
     "frontend",
     "backend",
     "protocol",
+    "tools/record",
 ]

@@ -1,0 +1,12 @@
+[package]
+authors = ["Joshua Warner <joshuawarner32@gmail.com>"]
+edition = "2018"
+name = "record"
+version = "0.1.0"
+
+[dependencies]
+failure = "0.1.1"
+nix = "*"
+os_pipe = "0.6.1"
+termion = "*"
+vte = "0.3.3"
