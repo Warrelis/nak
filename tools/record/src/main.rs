@@ -1,5 +1,15 @@
+#[macro_use]
+extern crate serde_derive;
 
+use byteorder::ByteOrder;
+use byteorder::WriteBytesExt;
+use byteorder::LittleEndian;
+use std::io::Read;
+use structopt::StructOpt;
+use std::path::PathBuf;
 use std::io::Stdin;
+use std::io::Write;
+use std::fs::File;
 use std::os::unix::io::RawFd;
 use std::ffi::OsStr;
 use std::os::unix::io::AsRawFd;
@@ -8,8 +18,6 @@ use std::os::unix::process::CommandExt;
 use std::process as pr;
 use std::{io, fmt, str};
 use std::time::{Instant, Duration};
-use std::env;
-
 use failure::Error;
 use nix::pty::openpty;
 use nix::pty::Winsize;
@@ -91,7 +99,7 @@ impl vte::Perform for PrintPerformer {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 struct Attrs {
     input_flags: u64,
     output_flags: u64,
@@ -112,22 +120,67 @@ impl From<Termios> for Attrs {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 enum Event {
     Input(Vec<u8>),
     Output(Vec<u8>),
     Config(Attrs),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Record {
     ts: Duration,
     event: Event,
 }
 
+struct DiskRecording {
+    file: File,
+}
+
+impl DiskRecording {
+    fn new(file: File) -> DiskRecording {
+        DiskRecording {
+            file,
+        }
+    }
+}
+
+impl Sink<Record> for DiskRecording {
+    fn accept(&mut self, item: Record) {
+        let data = bincode::serialize(&item).unwrap();
+        self.file.write_u32::<LittleEndian>(data.len() as u32).unwrap();
+        self.file.write_all(&data).unwrap();
+    }
+}
+
 #[derive(Clone)]
 struct Recording {
     records: Vec<Record>,
+}
+
+impl Recording {
+    fn new() -> Recording {
+        Recording {
+            records: Vec::new(),
+        }
+    }
+
+    fn parse(mut data: &[u8]) -> Result<Recording, Error> {
+        let mut records = Vec::new();
+
+        while data.len() >= 4 {
+            let len = LittleEndian::read_u32(&data);
+            data = &data[4..];
+
+            let buf = &data[..len as usize];
+            let r: Record = bincode::deserialize(buf)?;
+            records.push(r);
+
+            data = &data[len as usize..];
+        }
+
+        Ok(Recording { records })
+    }
 }
 
 impl fmt::Display for Recording {
@@ -148,6 +201,22 @@ impl fmt::Display for Recording {
                      data)?;
         }
         Ok(())
+    }
+}
+
+trait Sink<T> {
+    fn accept(&mut self, item: T);
+}
+
+impl<T, R: Sink<T>> Sink<T> for &mut R {
+    fn accept(&mut self, item: T) {
+        (*self).accept(item);
+    }
+}
+
+impl Sink<Record> for Recording {
+    fn accept(&mut self, item: Record) {
+        self.records.push(item);
     }
 }
 
@@ -265,7 +334,7 @@ fn set_no_block(fd: RawFd) {
     nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::O_NONBLOCK)).unwrap();
 }
 
-fn record<It: Iterator<Item = S>, S: AsRef<OsStr>>(mut cmd: It) -> Result<Recording, Error> {
+fn record<It: Iterator<Item = S>, S: AsRef<OsStr>>(mut cmd: It, mut sink: impl Sink<Record>) -> Result<(), Error> {
     let winsize = Winsize {
         ws_row: 100,
         ws_col: 100,
@@ -275,39 +344,6 @@ fn record<It: Iterator<Item = S>, S: AsRef<OsStr>>(mut cmd: It) -> Result<Record
     let pty = openpty(Some(&winsize), None)?;
 
     let begin = Instant::now();
-
-    let mut records = Vec::new();
-
-
-    // let records_clone = records.clone();
-    // thread::spawn(move || {
-    //     let mut config: Attrs = tcgetattr(master_fd).unwrap().into();
-
-    //     records_clone
-    //         .lock()
-    //         .unwrap()
-    //         .push(Record {
-    //                   ts: begin - begin,
-    //                   event: Event::Config(config.clone()),
-    //               });
-
-    //     loop {
-    //         thread::sleep(Duration::from_millis(100));
-    //         let new_config: Attrs = tcgetattr(master_fd).unwrap().into();
-    //         let ts = Instant::now();
-
-    //         if &new_config != &config {
-    //             records_clone
-    //                 .lock()
-    //                 .unwrap()
-    //                 .push(Record {
-    //                           ts: ts - begin,
-    //                           event: Event::Config(new_config.clone()),
-    //                       });
-    //             config = new_config;
-    //         }
-    //     }
-    // });
 
     let head = cmd.next().unwrap();
 
@@ -322,6 +358,12 @@ fn record<It: Iterator<Item = S>, S: AsRef<OsStr>>(mut cmd: It) -> Result<Record
     set_no_block(stdout.as_raw_fd());
     set_no_block(master);
 
+    let mut config: Attrs = tcgetattr(master).unwrap().into();
+    
+    sink.accept(Record {
+        ts: begin - begin,
+        event: Event::Config(config.clone()),
+    });
 
     let mut child = pr::Command::new(head)
         .args(cmd)
@@ -346,12 +388,19 @@ fn record<It: Iterator<Item = S>, S: AsRef<OsStr>>(mut cmd: It) -> Result<Record
         })
         .spawn()?;
 
-    // output_thread.join().unwrap();
-
     let mut input = Piper::new(stdin.as_raw_fd(), master);
     let mut output = Piper::new(master, stdout.as_raw_fd());
 
     loop {
+        let new_config: Attrs = tcgetattr(master).unwrap().into();
+        if &new_config != &config {
+            sink.accept(Record {
+                ts: Instant::now() - begin,
+                event: Event::Config(new_config.clone()),
+            });
+            config = new_config;
+        }
+
         let mut read_set = FdSet::new();
         read_set.insert(master);
         read_set.insert(stdin.as_raw_fd());
@@ -376,15 +425,10 @@ fn record<It: Iterator<Item = S>, S: AsRef<OsStr>>(mut cmd: It) -> Result<Record
             Some(&mut except_set),
             None).unwrap();
 
-        // eprintln!("select");
-
-        let ts = Instant::now();
-
         if read_set.contains(stdin.as_raw_fd()) || write_set.contains(master) {
-            // eprintln!("a");
             let r = input.pipe_some()?;
-            records.push(Record {
-                ts: ts - begin,
+            sink.accept(Record {
+                ts: Instant::now() - begin,
                 event: Event::Input(r.data),
             });
             if r.eof {
@@ -393,10 +437,9 @@ fn record<It: Iterator<Item = S>, S: AsRef<OsStr>>(mut cmd: It) -> Result<Record
         }
 
         if read_set.contains(master) || write_set.contains(stdout.as_raw_fd()) {
-            // eprintln!("b");
             let r = output.pipe_some()?;
-            records.push(Record {
-                ts: ts - begin,
+            sink.accept(Record {
+                ts: Instant::now() - begin,
                 event: Event::Output(r.data),
             });
             if r.eof {
@@ -405,16 +448,60 @@ fn record<It: Iterator<Item = S>, S: AsRef<OsStr>>(mut cmd: It) -> Result<Record
         }
     }
 
-    // eprintln!("exit status: {:?}", child.wait()?);
+    child.wait()?;
 
-    Ok(Recording { records })
+    Ok(())
+}
+
+#[derive(StructOpt)]
+struct Args {
+    #[structopt(parse(from_os_str), long = "file", short = "f")]
+    file: PathBuf,
+
+    #[structopt(long = "play", short = "p")]
+    play: bool,
+
+    #[structopt(long = "display", short = "d")]
+    display: bool,
+
+    cmd: Vec<String>,
 }
 
 fn main() -> Result<(), Error> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
-    let recording = record(args.iter())?;
+    let args = Args::from_args();
 
-    eprintln!("{}", recording);
+    if !args.play && !args.display {
+        let mut recording = DiskRecording::new(File::create(args.file)?);
+        record(args.cmd.iter(), &mut recording)?;
+    } else {
+        let mut f = File::open(args.file)?;
+        let mut contents = Vec::new();
+        f.read_to_end(&mut contents)?;
+        let r = Recording::parse(&contents)?;
+
+        if args.play {
+            assert!(!args.display);
+
+            let mut stdout = io::stdout();
+            let begin = Instant::now();
+            for record in r.records {
+                let elapsed = Instant::now() - begin;
+                if elapsed < record.ts {
+                    std::thread::sleep(record.ts - elapsed);
+                }
+                match record.event {
+                    Event::Config(_) => {},
+                    Event::Input(_) => {},
+                    Event::Output(data) => {
+                        stdout.write_all(&data)?;
+                        stdout.flush()?;
+                    }
+                }
+            }
+        } else if args.display {
+            eprintln!("{}", r);
+        }
+    }
 
     Ok(())
 }
